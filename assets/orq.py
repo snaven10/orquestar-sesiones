@@ -1377,6 +1377,126 @@ def cmd_scout(args):
     return 0
 
 
+# ───────────────────────────── agent save (PLAN-001 DD-5) ─────────────────────────────
+
+def _git_raiz(path):
+    rc, out, _ = sh(["git", "-C", str(path), "rev-parse", "--show-toplevel"])
+    return out if rc == 0 else None
+
+
+def cmd_agent_save(args):
+    """Guarda un draft como agente en el scope que el usuario ELIGIÓ. Sin `--scope` no hay
+    default: dónde vive un agente (solo este repo / todo el monorepo / global) es una decisión
+    con efectos sobre otros proyectos y no la toma el script."""
+    cfg = load_cfg()
+    wsd = ws_actual(cfg)
+    if not args.scope:
+        print("  falta --scope: acá no hay default, el usuario elige dónde se guarda:", file=sys.stderr)
+        for l in texto_scopes(cfg):
+            print(l, file=sys.stderr)
+        return 2
+    if args.scope == "m" and wsd["tipo"] == "repo":
+        print(f"  el scope [m] no existe en el ws `{wsd['nombre']}` (es un repo suelto, no hay monorepo). "
+              f"Opciones:", file=sys.stderr)
+        for l in texto_scopes(cfg):
+            print(l, file=sys.stderr)
+        return 2
+    if args.scope == "m" and not wsd["add_dir"]:
+        print(f"  [m] exige que el ws declare `add_dir` (sin él el agente del monorepo no se resuelve).",
+              file=sys.stderr)
+        return 2
+
+    # el draft: ruta, o nombre dentro de ~/.orq/drafts/
+    cand = [Path(expand(args.draft)), DRAFTS / args.draft, DRAFTS / f"{args.draft}.md"]
+    draft = next((c for c in cand if c.is_file()), None)
+    if not draft:
+        print(f"  no encuentro el draft `{args.draft}` (probé: {', '.join(str(c) for c in cand)})",
+              file=sys.stderr)
+        return 2
+    texto = draft.read_text()
+    fm = parse_frontmatter(texto)
+    falta = [k for k in ("name", "description", "model") if not fm.get(k)]
+    if falta:
+        print(f"  el draft no es válido: falta `{', '.join(falta)}` en el frontmatter "
+              f"(`model:` es obligatorio: {'|'.join(MODELOS_VALIDOS)}).", file=sys.stderr)
+        return 2
+    if fm["model"] not in MODELOS_VALIDOS:
+        print(f"  `model: {fm['model']}` inválido. Debe ser uno de {'|'.join(MODELOS_VALIDOS)}.",
+              file=sys.stderr)
+        return 2
+    nombre = fm["name"]
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", nombre):
+        print(f"  `name: {nombre}` no sirve de nombre de archivo (kebab-case en minúsculas).", file=sys.stderr)
+        return 2
+
+    arq = target = None
+    if args.destino:
+        m = re.fullmatch(r"([\w-]+)@([^\s@]+)", args.destino)
+        if not m:
+            print(f"  destino `{args.destino}` inválido: se espera <arquetipo>@<target>", file=sys.stderr)
+            return 2
+        arq, target = m.groups()
+        if arq not in cfg["arquetipos"] or arq == "scout":
+            print(f"  arquetipo `{arq}` no válido. Declarados: "
+                  f"{', '.join(a for a in cfg['arquetipos'] if a != 'scout')}", file=sys.stderr)
+            return 2
+        if target != "*":
+            targets = descubrir_targets(cfg)
+            if targets and target not in targets:
+                print(f"  target `{target}` no existe en el ws `{wsd['nombre']}`. "
+                      f"Targets: {', '.join(targets)}", file=sys.stderr)
+                return 2
+
+    base = Path(expand(wsd["path"]))
+    if args.scope == "p":
+        if wsd["tipo"] == "repo":
+            repo = base
+        elif target and target != "*":
+            repo = base / target
+        else:
+            print("  [p] en un ws multi necesita un target concreto: pasá <arq>@<repo>.", file=sys.stderr)
+            return 2
+        destino_dir = repo / ".claude" / "agents"
+    elif args.scope == "m":
+        destino_dir, repo = Path(expand(wsd["agents"])), None
+    else:
+        destino_dir, repo = Path(expand("~/.claude/agents")), None
+
+    archivo = destino_dir / f"{nombre}.md"
+    if archivo.exists() and not args.force:
+        print(f"  {archivo} ya existe. No se pisa sin --force.", file=sys.stderr)
+        return 2
+    destino_dir.mkdir(parents=True, exist_ok=True)
+    archivo.write_text(texto)
+
+    # otro agente de igual nombre en un scope MÁS cercano gana en la resolución: avisarlo
+    sombra = [a for a in catalogo_agentes(cfg, target if target and target != "*" else None)
+              if a["name"] == nombre and Path(a["path"]) != archivo]
+    if sombra:
+        print(f"  ⚠ ya existe otro `{nombre}` en {sombra[0]['path']} (scope {sombra[0]['scope']}): "
+              f"el de scope más cercano al repo gana.")
+
+    if args.destino:
+        ov = cargar_overlay()
+        ov.setdefault(wsd["nombre"], {})[args.destino] = nombre
+        guardar_overlay(ov)
+    # el draft sale de la cola de pendientes (con sus razones) pero no se borra
+    if draft.parent == DRAFTS:
+        (DRAFTS / "guardados").mkdir(exist_ok=True)
+        for f in (draft, DRAFTS / f"{draft.stem}.razones.md"):
+            if f.exists():
+                f.rename(DRAFTS / "guardados" / f.name)
+    print(f"  ✅ guardado: {archivo}  (scope {args.scope})")
+    print(f"     {wsd['nombre']}: {args.destino} → {nombre}  (origen overlay)" if args.destino else
+          f"     sin <arq>@<target>: NO se registró; confirmalo con `orq agent use {nombre} <arq>@<target>`")
+    if args.scope == "p":
+        raiz = _git_raiz(repo)
+        if raiz:
+            print(f"  ⚠ {archivo.relative_to(repo)} queda SIN commitear en {raiz}. "
+                  f"Commitealo vos cuando lo revises: orq no commitea.")
+    return 0
+
+
 # ───────────────────────────── harvest ─────────────────────────────
 
 def ws_plans(cfg):
@@ -1795,6 +1915,14 @@ def main():
     u = ags.add_parser("use", help="confirmar un agente existente para <arquetipo>@<target>")
     u.add_argument("nombre"); u.add_argument("destino", help="<arquetipo>@<target> (target * = todos)")
     u.set_defaults(fn=cmd_agent_use)
+    sv = ags.add_parser("save", help="guardar un draft como agente (el scope se elige, sin default)")
+    sv.add_argument("draft", help="ruta, o nombre dentro de ~/.orq/drafts/")
+    sv.add_argument("destino", nargs="?", help="<arquetipo>@<target>: registra el mapeo en el overlay")
+    sv.add_argument("--scope", choices=["p", "m", "g"],
+                    help="p=proyecto · m=monorepo · g=global. OBLIGATORIO, no hay default")
+    sv.add_argument("--force", action="store_true", help="pisar un agente existente")
+    sv.set_defaults(fn=cmd_agent_save)
+
     sc = sub.add_parser("scout", help="investigar un repo y dejar un draft de agente (cuesta; pide token)")
     sc.add_argument("destino", nargs="?", help="<arquetipo>@<target> del scout propuesto en el token")
     sc.add_argument("--token"); sc.add_argument("--only", help="N del scout a correr (S1, S2…)")
