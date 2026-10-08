@@ -532,9 +532,13 @@ def lineas_candidatos(clave, r, sangria="      "):
     return out
 
 
-def scouts_de(faltantes, cfg):
+def scouts_de(faltantes, cfg, nombre=None):
     """Escalón 3: un scout por faltante SIN candidatos del disco. Si hay un candidato, el
-    camino barato es `agent use`; investigar solo se ofrece cuando no queda otra."""
+    camino barato es `agent use`; investigar solo se ofrece cuando no queda otra.
+
+    `nombre`: el que pide el PLAN (`Especialista:`). Viaja hasta el scout y se le EXIGE:
+    si el scout lo bautizara a su gusto, después del `save` el plan lo seguiría viendo
+    como faltante y el spawn del lote quedaría bloqueado por un agente que sí existe."""
     sc = cfg["arquetipos"]["scout"]
     vistos, out = set(), []
     for clave, rs in faltantes:
@@ -542,7 +546,8 @@ def scouts_de(faltantes, cfg):
             continue
         vistos.add(clave)
         arq, tgt = clave.split("@", 1)
-        out.append({"arquetipo": arq, "target": tgt, "clave": clave, "costo": sc["costo"]})
+        out.append({"arquetipo": arq, "target": tgt, "clave": clave, "costo": sc["costo"],
+                    "nombre": nombre})
     return out
 
 
@@ -552,7 +557,8 @@ def imprimir_scouts(scouts, tok):
     print("\n  🔎 SCOUTS PROPUESTOS (investigan el repo y dejan un BORRADOR; no guardan nada):")
     for i, s_ in enumerate(scouts, 1):
         c = s_["costo"]
-        print(f"    S{i} {s_['clave']:<40} ~${c[0]:.2f}–{c[1]:.2f}  local · sonnet · solo lectura")
+        print(f"    S{i} {s_['clave']:<40} ~${c[0]:.2f}–{c[1]:.2f}  local · sonnet · solo lectura"
+              + (f"  → name: {s_['nombre']}" if s_.get("nombre") else ""))
     print(f"    cuesta plata: necesita aval →  orq scout --token {tok} --only N")
 
 
@@ -780,7 +786,8 @@ def need_de_plan(args, cfg):
         print(f"\n  Fuera (ya cerradas): {', '.join(data['saltadas'])}")
     if faltan:
         print(f"\n  ❌ El plan pide specialists que NO existen: {', '.join(sorted(set(faltan)))}")
-        print("     Proponé su estructura y PREGUNTÁ el scope antes de lanzar:")
+        print("     Candidato del disco → `orq agent use`. Sin candidatos → scout (con aval).")
+        print("     Al guardar, el scope SE PREGUNTA siempre, nunca hay default:")
         for l in texto_scopes(cfg):
             print(l)
         for n in sorted(set(faltan)):
@@ -790,7 +797,7 @@ def need_de_plan(args, cfg):
             rs["aviso"] = None
             for l in lineas_candidatos(f"worker@{faltan_t[n]}", rs):
                 print(l)
-            scouts += scouts_de([(f"worker@{faltan_t[n]}", rs)], cfg)
+            scouts += scouts_de([(f"worker@{faltan_t[n]}", rs)], cfg, nombre=n)
         scouts = [x for k, x in enumerate(scouts) if x["clave"] not in {y["clave"] for y in scouts[:k]}]
         imprimir_scouts(scouts, tok)
     for r, n in por_repo.items():
@@ -1377,9 +1384,11 @@ def dossier_scout(cfg, arq, target):
     return "\n".join(L)
 
 
-def prompt_scout(cfg, arq, target):
+def prompt_scout(cfg, arq, target, nombre=None):
+    fijo = (f"\nEl `name` del frontmatter DEBE ser exactamente `{nombre}`: lo pide el PLAN y así lo va a buscar el orquestador.\n"
+            if nombre else "")
     return f"""Sos un SCOUT: investigás un repo y diseñás UN agente (specialist) de Claude Code para el rol `{arq}` sobre `{target}`. NO tenés Write ni Edit y NO debés escribir archivos: tu entrega es el texto de tu respuesta final.
-
+{fijo}
 PASOS
 1. Invocá la skill `{SKILL_RECOMMENDER}` y leé sus templates de subagentes en `{expand(TEMPLATES_RECOMMENDER)}`. Usalos como base de estructura, no los copies a ciegas.
 2. Consultá la memoria del proyecto con `mcp__devctx__recall` y explorá el código con `mcp__devctx__search` / `mcp__devctx__build_context`: buscá convenciones, decisiones y gotchas REALES de este repo.
@@ -1468,7 +1477,7 @@ def cmd_scout(args):
     jid = secrets.token_hex(4)
     jdir = STATE / "jobs" / jid
     jdir.mkdir(parents=True, exist_ok=True)
-    (jdir / "prompt.txt").write_text(prompt_scout(cfg, arq, target))
+    (jdir / "prompt.txt").write_text(prompt_scout(cfg, arq, target, sel.get("nombre")))
     cmd = [claude, "-p", "--output-format", "json", "--model", sc["modelo"],
            "--name", f"orq-scout-{clave}", *flags_tools(sc, quote=False)]
     # se marca ANTES de correr: si el scout falla igual costó, y reintentar sin avisar es gastar doble
@@ -1502,6 +1511,13 @@ def cmd_scout(args):
         return 1
     fm = parse_frontmatter(agente)
     nombre = fm.get("name", "")
+    pedido = sel.get("nombre")
+    if pedido and nombre != pedido:
+        # El prompt lo exige, pero un LLM puede desobedecer: se corrige acá y se avisa,
+        # en vez de dejar un draft que el plan nunca va a reconocer.
+        print(f"  ⚠ el scout lo llamó `{nombre}`; el PLAN pide `{pedido}` → se renombra.")
+        agente = re.sub(r"(?m)^name:.*$", f"name: {pedido}", agente, count=1)
+        nombre = pedido
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", nombre):
         print(f"  ❌ el agente devuelto no tiene un `name` válido en el frontmatter "
               f"({nombre!r}). Respuesta en {out_json}", file=sys.stderr)
@@ -1523,7 +1539,8 @@ def cmd_scout(args):
     print("\n  Revisalo y elegí DÓNDE guardarlo (el scope lo decide el usuario, no hay default):")
     for l in texto_scopes(cfg):
         print(l)
-    print(f"\n  orq agent save {draft} {clave} --scope ?     (p | m | g)\n")
+    validos = "p | g" if ws_actual(cfg)["tipo"] == "repo" else "p | m | g"
+    print(f"\n  orq agent save {draft} {clave} --scope ?     ({validos})\n")
     return 0
 
 
@@ -1880,16 +1897,21 @@ def cmd_plan(args):
     for sp, n in pedidos.most_common():
         sp_clean = sp
         hallado = next((c[sp_clean] for c in cats if sp_clean in c), None)
-        ok = hallado is not None
-        print(f"    {'✅' if ok else '❌'} {sp_clean:<34} {n:>3} tasks   "
-              f"ORIGEN {scope_txt[hallado['scope']] if ok else '-'}")
+        # Mismo criterio que el gate de spawn (`specialist_vigente`): un built-in de Claude
+        # Code no vive como .md en ningún lado y NO es un faltante. Si `plan` y `spawn`
+        # discrepan, la vista miente sobre lo que spawn va a hacer.
+        builtin = hallado is None and sp_clean in AGENTES_BUILTIN
+        ok = hallado is not None or builtin
+        origen = "builtin" if builtin else (scope_txt[hallado["scope"]] if ok else "-")
+        print(f"    {'✅' if ok else '❌'} {sp_clean:<34} {n:>3} tasks   ORIGEN {origen}")
         if not ok:
             faltan.append(sp_clean)
     if faltan:
         print(f"\n  ❌ El plan nombra specialists que NO existen: {', '.join(faltan)}")
-        print("     Proponé su estructura (devctx + memoria histórica + context7) y")
-        print("     PREGUNTÁ el scope: [p] proyecto  "
-              + ("" if ws_actual(cfg)["tipo"] == "repo" else "[m] monorepo  ") + "[g] global")
+        print("     Candidato del disco → confirmar con `orq agent use`. Sin candidatos → scout")
+        print("     (con aval, vía `orq need --plan N --lote L`). Al guardar, el scope SE PREGUNTA:")
+        for l in texto_scopes(cfg):
+            print("  " + l)
         for n in faltan:
             r = repo_de.get(n) or ws_actual(cfg)["nombre"]
             rs = resolver_specialist("worker", r, cfg)
