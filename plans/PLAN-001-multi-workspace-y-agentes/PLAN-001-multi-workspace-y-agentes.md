@@ -36,7 +36,7 @@ y habilita repos sueltos como `~/personal/claude-dashboard`.
 | TASK-001 | Workspaces declarativos: `multi` (~/mi-empresa) y `repo` (suelto) | general-purpose (sonnet) | TASK-000 | `done` |
 | TASK-002 | Escalones 1-2: overlay, verificación de existencia, match por afinidad, `agent use` | general-purpose (sonnet) | TASK-001 | `done` |
 | TASK-003 | Escalón 3: arquetipo `scout` + `orq scout` con token | general-purpose (sonnet) | TASK-002 | `done` |
-| TASK-004 | Gate en spawn: sin specialist → rc=2 salvo `--sin-specialist` | general-purpose (sonnet) | TASK-002 | `pending` |
+| TASK-004 | Gate en spawn: sin specialist → rc=2 salvo `--sin-specialist` | general-purpose (sonnet) | TASK-002 | `done` |
 | TASK-007 | `orq agent save --scope` (scope obligatorio, sin default) | general-purpose (sonnet) | TASK-002 | `done` |
 | TASK-005 | SKILL.md §3 reescrito (3 escalones) + escenario 17 | general-purpose (sonnet) | TASK-003, TASK-004, TASK-007 | `pending` |
 | TASK-006 | Verificación: no-regresión MI-EMPRESA + dry-run claude-dashboard (incluye 1 scout real, con aval) | general-purpose (sonnet) | TASK-005 | `pending` |
