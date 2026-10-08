@@ -101,6 +101,45 @@ CFG = {
         #   worker@api-plantillas · worker@tickets-srv · qa@* · validator@*
     },
 
+    # ── Match por afinidad (escalón 2 de la resolución de specialists, PLAN-001 DD-3) ──
+    # Puntaje mecánico y determinístico: gratis, reproducible y, sobre todo, NUNCA autoasigna:
+    # solo propone candidatos y el usuario confirma con `orq agent use`.
+    "match_umbral": 0.5,
+
+    # Archivos marcadores del repo -> tags de stack. `contiene` busca el texto (en minúsculas)
+    # DENTRO del archivo y suma tags: así `pom.xml` distingue Quarkus de Spring sin parsear XML.
+    "señales": [
+        {"archivos": ["pom.xml", "build.gradle", "build.gradle.kts"], "tags": ["java"],
+         "contiene": {"quarkus": ["quarkus"], "oracle": ["oracle"]}},
+        {"archivos": ["angular.json"], "tags": ["angular"]},
+        {"archivos": ["nx.json"], "tags": ["nx"]},
+        {"archivos": ["go.mod"], "tags": ["go"]},
+        {"archivos": ["Cargo.toml"], "tags": ["rust"]},
+        {"archivos": ["pyproject.toml", "requirements.txt"], "tags": ["python"]},
+        # package.json casi siempre acompaña a otro stack: por sí solo solo dice `node`
+        {"archivos": ["package.json"], "tags": ["node"],
+         "contiene": {"@angular/core": ["angular"], "\"react\"": ["react"],
+                      "\"typescript\"": ["typescript"]}},
+    ],
+
+    # Cómo se reconoce cada tag en el texto (name + description) de un agente. Sin esto `go`
+    # no matchearía a "Golang" y `node` no matchearía a "Node.js". Tag sin alias = él mismo.
+    "tags_alias": {
+        "go": ["go", "golang"],
+        "node": ["node", "nodejs", "node.js", "npm"],
+        "java": ["java", "jvm"],
+        "python": ["python", "py"],
+        "typescript": ["typescript", "ts"],
+    },
+
+    # El arquetipo también cuenta como señal: un `reviewer` pide un agente que revise.
+    # Son prefijos de palabra ("review" matchea "reviews", "reviewer").
+    "arquetipo_señales": {
+        "reviewer": ["review", "audit"],
+        "validator": ["audit", "validat", "verif"],
+        "qa": ["qa", "test"],
+    },
+
     # Recursos EXCLUSIVOS: el lock es por RECURSO, no por repo.
     # Dos worktrees perfectamente aislados igual se destruyen si tocan lo mismo.
     "recursos_exclusivos": {

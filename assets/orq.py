@@ -239,9 +239,210 @@ def corta(s, n):
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
+# ──────────────── specialists: overlay, catálogo y match (PLAN-001 DD-2/DD-3) ────────────────
+# Resolución en escalones: 1) CONFIRMADO (overlay del usuario, luego roles.py) · 2) MATCH
+# (candidatos del disco, solo se PROPONEN) · 3) SCOUT (investigar; es de otra task).
+
+def cargar_overlay():
+    """Mapeos que el usuario confirmó: {"<ws>": {"arq@target": "agente"}}. Vive en ~/.orq y no
+    en roles.py para que confirmar un match no obligue a editar la política a mano."""
+    return _load("specialists.json", {})
+
+
+def guardar_overlay(data):
+    _save("specialists.json", data)
+
+
+def parse_frontmatter(texto):
+    """Frontmatter de un agente SIN yaml (este python no tiene pip). Soporta lo que usan los
+    agentes reales: `clave: valor`, valores entre comillas, bloques `>`/`|` (multilínea),
+    escalares partidos en varias líneas indentadas y listas `- item`. Devuelve {} si no hay."""
+    lineas = texto.replace("\r\n", "\n").split("\n")
+    if not lineas or lineas[0].strip() != "---":
+        return {}
+    try:
+        fin = next(i for i in range(1, len(lineas)) if lineas[i].strip() == "---")
+    except StopIteration:
+        return {}                      # sin cierre: no se adivina dónde termina
+    fm, clave, partes, bloque = {}, None, [], None
+
+    def cerrar():
+        if clave is not None:
+            sep = "\n" if bloque == "|" else " "
+            v = sep.join(x for x in partes if x != "").strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            fm[clave] = v
+
+    for ln in lineas[1:fin]:
+        m = re.match(r"^([A-Za-z_][\w-]*)\s*:\s*(.*)$", ln)
+        if m and not ln[:1].isspace():
+            cerrar()
+            clave, v = m.group(1), m.group(2).strip()
+            bloque = v[0] if v[:1] in (">", "|") else None
+            partes = [] if bloque else [v]
+        elif clave is not None:
+            t = ln.strip()
+            if t.startswith("- "):     # item de lista: se une con comas
+                t = t[2:].strip()
+                prev = [i for i, x in enumerate(partes) if x]
+                if prev:
+                    partes[prev[-1]] += ","
+            partes.append(t)
+    cerrar()
+    return fm
+
+
+def dirs_agentes(cfg, target=None):
+    """Dirs de agentes alcanzables con los flags de spawn, en orden de precedencia, como
+    [(Path, scope)]: p = del repo (se resuelve por cwd) · m = del workspace (exige --add-dir)
+    · g = global. Un dir repetido (en `repo`, p y ws.agents son el mismo) se cuenta una vez."""
+    w = ws_actual(cfg)
+    base = Path(expand(w["path"]))
+    out = []
+    if w["tipo"] == "repo":
+        out.append((base / ".claude" / "agents", "p"))
+    else:
+        if target:
+            out.append((base / target / ".claude" / "agents", "p"))
+        out.append((Path(expand(w["agents"])), "m"))
+    out.append((Path(expand("~/.claude/agents")), "g"))
+    vistos, res = set(), []
+    for d, sc in out:
+        k = str(d.resolve()) if d.exists() else str(d)
+        if k not in vistos:
+            vistos.add(k); res.append((d, sc))
+    return res
+
+
+def catalogo_agentes(cfg, target=None):
+    """Agentes en disco -> [{name, description, model, path, scope}]. Si un nombre aparece en
+    varios dirs gana el de scope más cercano al repo (el mismo orden que usa claude)."""
+    vistos, cat = set(), []
+    for d, sc in dirs_agentes(cfg, target):
+        if not d.is_dir():
+            continue
+        for f in sorted(d.glob("*.md")):      # `*.md.bak2` no matchea: los backups no cuentan
+            fm = parse_frontmatter(f.read_text(errors="ignore"))
+            nombre = fm.get("name") or f.stem
+            if nombre in vistos:
+                continue
+            vistos.add(nombre)
+            cat.append({"name": nombre, "description": fm.get("description", ""),
+                        "model": fm.get("model", ""), "path": str(f), "scope": sc})
+    return cat
+
+
+def señales_target(cfg, target):
+    """Tags de stack del repo según roles.py["señales"]. Se lee el disco LOCAL (igual que el
+    catálogo de agentes); un target inexistente da [] y el match simplemente no propone nada."""
+    w = ws_actual(cfg)
+    base = Path(expand(w["path"]))
+    repo = base if w["tipo"] == "repo" else base / target
+    tags = []
+    for regla in cfg.get("señales", []):
+        for nombre in regla["archivos"]:
+            f = repo / nombre
+            if not f.is_file():
+                continue
+            tags += regla.get("tags", [])
+            if regla.get("contiene"):
+                txt = f.read_text(errors="ignore").lower()
+                for needle, extra in regla["contiene"].items():
+                    if needle.lower() in txt:
+                        tags += extra
+            break                         # un marcador por regla alcanza (pom O gradle)
+    return list(dict.fromkeys(tags))      # sin duplicados, conserva el orden
+
+
+def puntuar(agente, tags, arquetipo, cfg, usados=frozenset()):
+    """Afinidad 0..1 = tags (del target + el rol del arquetipo) hallados en name+description
+    del agente / total de tags. Bonus +0.1 si ese agente ya está mapeado en el ws.
+    Devuelve (score, [tags que matchearon])."""
+    texto = f"{agente['name']} {agente['description']}".lower()
+    alias = cfg.get("tags_alias", {})
+    total, hit = [], []
+    for t in tags:
+        total.append(t)
+        pats = alias.get(t, [t])
+        if any(re.search(rf"(?<![\w]){re.escape(a)}(?![\w])", texto) for a in pats):
+            hit.append(t)
+    rol = (cfg.get("arquetipo_señales") or {}).get(arquetipo)
+    if rol:
+        total.append(arquetipo)
+        if any(re.search(rf"(?<![\w]){re.escape(r)}", texto) for r in rol):
+            hit.append(arquetipo)
+    if not total:
+        return 0.0, []
+    score = len(hit) / len(total)
+    if hit and agente["name"] in usados:   # el bonus solo desempata, nunca crea un match de la nada
+        score = min(1.0, score + 0.1)
+    return round(score, 2), hit
+
+
 def resolver_specialist(arquetipo, target, cfg):
+    """-> {nombre|None, origen: overlay|roles|-, candidatos: [(nombre, score, tags)], aviso}.
+
+    `nombre` solo viene si el agente EXISTE como .md alcanzable: un mapeo a un agente que no
+    está en disco antes caía a sesión genérica en silencio; ahora es un faltante con aviso.
+    Los candidatos se calculan solo cuando no hay nombre, y nunca se autoasignan."""
+    ws = ws_actual(cfg)["nombre"]
+    ov = cargar_overlay().get(ws, {})
     sp = cfg.get("specialists") or {}
-    return sp.get(f"{arquetipo}@{target}") or sp.get(f"{arquetipo}@*")
+    k, kw = f"{arquetipo}@{target}", f"{arquetipo}@*"
+    mapeado, origen = None, "-"
+    for fuente, tabla in (("overlay", ov), ("roles", sp)):
+        n = tabla.get(k) or tabla.get(kw)
+        if n:
+            mapeado, origen = n, fuente
+            break
+    cat = catalogo_agentes(cfg, target)
+    res = {"nombre": None, "origen": "-", "candidatos": [], "aviso": None}
+    if mapeado and any(a["name"] == mapeado for a in cat):
+        res.update(nombre=mapeado, origen=origen)
+        return res
+    if mapeado:
+        res["aviso"] = (f"mapeado a `{mapeado}` ({origen}) pero no existe como .md alcanzable: "
+                        f"{' · '.join(str(d) for d, _ in dirs_agentes(cfg, target))}")
+    usados = (set(ov.values()) | set(sp.values())) - ({mapeado} if mapeado else set())
+    tags = señales_target(cfg, target)
+    umbral = cfg.get("match_umbral", 0.5)
+    pun = []
+    for a in cat:
+        sc, hit = puntuar(a, tags, arquetipo, cfg, usados)
+        if sc >= umbral and hit:
+            pun.append((a["name"], sc, hit))
+    pun.sort(key=lambda x: (-x[1], x[0]))   # empate: orden alfabético, determinístico
+    res["candidatos"] = pun[:3]
+    return res
+
+
+def texto_scopes(cfg):
+    """Scopes donde se puede guardar un agente nuevo, según el tipo de workspace (DD-5):
+    en `repo` no hay monorepo, así que solo [p] y [g]."""
+    w = ws_actual(cfg)
+    if w["tipo"] == "repo":
+        l = [f"    [p] proyecto  {w['path']}/.claude/agents/   solo este repo"]
+    else:
+        l = ["    [p] proyecto  <repo>/.claude/agents/      solo ese repo",
+             f"    [m] monorepo  {w['agents']}/     exige --add-dir {w['add_dir']}"]
+    l.append("    [g] global    ~/.claude/agents/           contamina otros proyectos")
+    return l
+
+
+def lineas_candidatos(clave, r, sangria="      "):
+    """Qué mostrar bajo un faltante: aviso, top 3 con sus tags, o la salida a `scout`."""
+    out = []
+    if r.get("aviso"):
+        out.append(f"{sangria}⚠ {r['aviso']}")
+    if r["candidatos"]:
+        out.append(f"{sangria}candidatos del disco (propuestos, NO asignados):")
+        for n, sc, tg in r["candidatos"]:
+            out.append(f"{sangria}  {n:<34}{sc:<6.2f}[{', '.join(tg)}]")
+        out.append(f"{sangria}confirmar: orq agent use {r['candidatos'][0][0]} {clave}")
+    else:
+        out.append(f"{sangria}sin candidatos → orq scout {clave}")
+    return out
 
 
 # ──────────────────── política de árbol ────────────────────
@@ -323,7 +524,8 @@ def cmd_need(args):
     propuesta, faltantes = [], []
     for t in tocados:
         for arq in ("worker", "reviewer"):
-            sp = resolver_specialist(arq, t, cfg)
+            rs = resolver_specialist(arq, t, cfg)
+            sp = rs["nombre"]
             key = f"{arq}@{t}"
             pf = estados.get(t, {})
             persist = cfg["arquetipos"][arq]["persist"]
@@ -332,11 +534,12 @@ def cmd_need(args):
             modo = clasificar(arq, intent, pf, n_workers_mismo_repo=args.paralelo)
             arbol, necesita_wt, pregunta = decidir_arbol(modo, cfg, pf)
             propuesta.append({"arquetipo": arq, "target": t, "specialist": sp,
+                              "origen": rs["origen"], "candidatos": rs["candidatos"],
                               "estado": estado, "arbol": arbol, "modo": modo,
                               "worktree": necesita_wt, "pregunta": pregunta,
                               "branch": pf.get("branch"), "head": pf.get("head")})
             if not sp:
-                faltantes.append(key)
+                faltantes.append((key, rs))
 
     recursos = detectar_recursos(intent, cfg)
     costo = 0.12 * len(propuesta)
@@ -350,11 +553,11 @@ def cmd_need(args):
         print(f"    {t:<34} [{s.get('branch','?')}] {s.get('head','')} "
               f"dirty={s.get('dirty',0)}{marca}")
     print(f"\n  PROPUESTA — verificá antes de confirmar:\n")
-    print(f"    {'#':<3}{'ARQUETIPO':<11}{'TARGET':<32}{'SPECIALIST':<30}{'ÁRBOL':<40}{'ESTADO'}")
+    print(f"    {'#':<3}{'ARQUETIPO':<11}{'TARGET':<32}{'SPECIALIST':<30}{'ORIGEN':<9}{'ÁRBOL':<40}{'ESTADO'}")
     for i, p in enumerate(propuesta, 1):
         sp = p["specialist"] or "❌ SIN SPECIALIST"
         print(f"    {i:<3}{p['arquetipo']:<11}{corta(p['target'],30):<32}"
-              f"{corta(sp,28):<30}{corta(p['arbol'],38):<40}{p['estado']}")
+              f"{corta(sp,28):<30}{p['origen']:<9}{corta(p['arbol'],38):<40}{p['estado']}")
 
     preguntas = [(i, p) for i, p in enumerate(propuesta, 1) if p.get("pregunta")]
     if preguntas:
@@ -380,13 +583,14 @@ def cmd_need(args):
 
     if faltantes:
         print("\n  ❌ FALTAN SPECIALISTS:")
-        for f in faltantes:
+        for f, rs in faltantes:
             print(f"    · {f}")
+            for l in lineas_candidatos(f, rs):
+                print(l)
         print("\n  La skill debe PROPONER su estructura (devctx + memoria histórica +")
         print("  context7 + claude-automation-recommender) y PREGUNTAR el scope:")
-        print("    [p] proyecto  <repo>/.claude/agents/      solo ese repo")
-        print("    [m] monorepo  ~/mi-empresa/.claude/agents/     exige --add-dir ~/mi-empresa")
-        print("    [g] global    ~/.claude/agents/           contamina otros proyectos")
+        for l in texto_scopes(cfg):
+            print(l)
 
     conc = maq(cfg)["concurrencia"]
     print(f"\n  Concurrencia máx {HOST}: {conc}"
@@ -416,7 +620,8 @@ def need_de_plan(args, cfg):
         print(f"  el lote {data['lote']} no tiene tasks pendientes"); return 1
 
     wsd = ws_actual(cfg)
-    existentes = {f.stem for f in Path(expand(wsd["agents"])).glob("*.md") if ".bak" not in f.name}
+    # catálogo por target: el agente de proyecto de un repo no se ve desde otro
+    cats = {r: {a["name"]: a for a in catalogo_agentes(cfg, r)} for r in por_repo}
     pfs = {r: (preflight(ws_ruta_target(cfg, r), cfg) or {}) for r in por_repo}
 
     print(f"\n  PLAN-{args.plan} · lote {data['lote']}  —  {len(prop)} sesiones\n")
@@ -426,20 +631,23 @@ def need_de_plan(args, cfg):
               f"dirty={pf.get('dirty',0)}{'  ⚠ ACTIVO' if pf.get('activo') else ''}")
 
     print(f"\n  PROPUESTA — verificá antes de confirmar:\n")
-    print(f"    {'#':<3}{'TASK':<9}{'SPECIALIST':<38}{'MOD':<8}{'REPO':<18}{'QUÉ'}")
-    faltan = []
+    print(f"    {'#':<3}{'TASK':<9}{'SPECIALIST':<38}{'ORIGEN':<9}{'MOD':<8}{'REPO':<18}{'QUÉ'}")
+    faltan, faltan_t = [], {}
     for i, p_ in enumerate(prop, 1):
         sp = p_["specialist"]
-        ok = sp in existentes
+        ok = sp in cats.get(p_["target"], {})
+        # el specialist lo declara el PLAN: su origen es el plan, no el overlay ni roles.py
+        p_["origen"] = "plan" if ok else "-"
         if not ok:
             faltan.append(sp)
+            faltan_t.setdefault(sp, p_["target"])
         n = len([x for x in prop if x["target"] == p_["target"]])
         p_["modo"] = "implementar_paralelo" if n > 1 else "implementar_simple"
         pf = pfs.get(p_["target"], {})
         p_["branch"], p_["head"] = pf.get("branch"), pf.get("head")
         p_["worktree"], p_["pregunta"] = False, None
         p_["arbol"] = "A DEFINIR (--rama / --arbol)"
-        print(f"    {i:<3}{p_['task']:<9}{('✅ ' if ok else '❌ ')+corta(sp,34):<38}"
+        print(f"    {i:<3}{p_['task']:<9}{('✅ ' if ok else '❌ ')+corta(sp,34):<38}{p_['origen']:<9}"
               f"{corta(p_['modelo'],6):<8}{corta(p_['target'],16):<18}{corta(p_['titulo'],42)}")
 
     if data.get("ramas") or data.get("bases"):
@@ -457,7 +665,16 @@ def need_de_plan(args, cfg):
         print(f"\n  Fuera (ya cerradas): {', '.join(data['saltadas'])}")
     if faltan:
         print(f"\n  ❌ El plan pide specialists que NO existen: {', '.join(sorted(set(faltan)))}")
-        print("     Proponé su estructura y PREGUNTÁ el scope antes de lanzar.")
+        print("     Proponé su estructura y PREGUNTÁ el scope antes de lanzar:")
+        for l in texto_scopes(cfg):
+            print(l)
+        for n in sorted(set(faltan)):
+            # el PLAN pide un nombre concreto: se busca algo parecido para ESE repo
+            print(f"    · {n}")
+            rs = resolver_specialist("worker", faltan_t[n], cfg)
+            rs["aviso"] = None
+            for l in lineas_candidatos(f"worker@{faltan_t[n]}", rs):
+                print(l)
     for r, n in por_repo.items():
         if n > 1:
             print(f"\n  ⚠ {n} sesiones sobre {r}. Si comparten árbol pueden tragarse")
@@ -883,6 +1100,41 @@ def cmd_tree(args):
     return 0
 
 
+# ───────────────────────────── agent ─────────────────────────────
+
+def cmd_agent_use(args):
+    """Confirma un specialist para `arq@target` en el ws activo. Es el ÚNICO camino por el
+    que un match pasa a escalón 1: orq propone, el usuario decide."""
+    cfg = load_cfg()
+    wsd = ws_actual(cfg)
+    m = re.fullmatch(r"([\w-]+)@([^\s@]+)", args.destino)
+    if not m:
+        print(f"  destino `{args.destino}` inválido: se espera <arquetipo>@<target> "
+              f"(target `*` = cualquiera)"); return 2
+    arq, target = m.groups()
+    if arq not in cfg["arquetipos"]:
+        print(f"  arquetipo `{arq}` no existe. Declarados: {', '.join(cfg['arquetipos'])}"); return 2
+    if target != "*":
+        targets = descubrir_targets(cfg)
+        if targets and target not in targets:
+            print(f"  target `{target}` no existe en el ws `{wsd['nombre']}`. "
+                  f"Targets: {', '.join(targets)}"); return 2
+    cat = catalogo_agentes(cfg, None if target == "*" else target)
+    ag = next((a for a in cat if a["name"] == args.nombre), None)
+    if not ag:
+        print(f"  el agente `{args.nombre}` no existe como .md alcanzable. Buscado en:")
+        for d, _ in dirs_agentes(cfg, None if target == "*" else target):
+            print(f"    · {d}")
+        return 2
+    ov = cargar_overlay()
+    previo = ov.setdefault(wsd["nombre"], {}).get(args.destino)
+    ov[wsd["nombre"]][args.destino] = args.nombre
+    guardar_overlay(ov)
+    print(f"  ✅ {wsd['nombre']}: {args.destino} → {args.nombre}  ({ag['path']})"
+          + (f"\n     reemplaza a `{previo}`" if previo and previo != args.nombre else ""))
+    return 0
+
+
 # ───────────────────────────── harvest ─────────────────────────────
 
 def ws_plans(cfg):
@@ -1102,20 +1354,37 @@ def cmd_plan(args):
         print("    `done` NO libera dependientes: verificá contra git antes de arrancar lo que sigue.")
 
     # ── specialists que el PLAN pide ──
-    existentes = {f.stem for f in ws_agents(cfg).glob("*.md") if ".bak" not in f.name}
+    # el repo de la task decide qué agentes de proyecto se ven; el nombre está bien si algún
+    # repo del plan lo alcanza
+    repos_plan = {repo_y_rama(t["proyecto"])[0] or None for t in tasks} or {None}
+    cats = [{a["name"]: a for a in catalogo_agentes(cfg, r)} for r in repos_plan]
     pedidos = Counter(primer_nombre(t["especialista"]) for t in tasks if t["especialista"])
+    repo_de = {}
+    for t in tasks:
+        repo_de.setdefault(primer_nombre(t["especialista"]), repo_y_rama(t["proyecto"])[0])
+    scope_txt = {"p": "proyecto", "m": "monorepo", "g": "global"}
     print(f"\n  SPECIALISTS QUE PIDE EL PLAN:")
     faltan = []
     for sp, n in pedidos.most_common():
         sp_clean = sp
-        ok = sp_clean in existentes
-        print(f"    {'✅' if ok else '❌'} {sp_clean:<34} {n:>3} tasks")
+        hallado = next((c[sp_clean] for c in cats if sp_clean in c), None)
+        ok = hallado is not None
+        print(f"    {'✅' if ok else '❌'} {sp_clean:<34} {n:>3} tasks   "
+              f"ORIGEN {scope_txt[hallado['scope']] if ok else '-'}")
         if not ok:
             faltan.append(sp_clean)
     if faltan:
         print(f"\n  ❌ El plan nombra specialists que NO existen: {', '.join(faltan)}")
         print("     Proponé su estructura (devctx + memoria histórica + context7) y")
-        print("     PREGUNTÁ el scope: [p] proyecto  [m] monorepo  [g] global")
+        print("     PREGUNTÁ el scope: [p] proyecto  "
+              + ("" if ws_actual(cfg)["tipo"] == "repo" else "[m] monorepo  ") + "[g] global")
+        for n in faltan:
+            r = repo_de.get(n) or ws_actual(cfg)["nombre"]
+            rs = resolver_specialist("worker", r, cfg)
+            rs["aviso"] = None
+            print(f"    · {n}")
+            for l in lineas_candidatos(f"worker@{r}", rs):
+                print(l)
 
     amb = [t for t in tasks if t["deps_ambiguo"]]
     if amb:
@@ -1278,6 +1547,12 @@ def main():
 
     pl = sub.add_parser("plan", help="leer un PLAN: olas, estados, specialists que pide")
     pl.add_argument("numero"); pl.set_defaults(fn=cmd_plan)
+
+    ag = sub.add_parser("agent", help="gestionar los specialists del workspace")
+    ags = ag.add_subparsers(dest="agente_cmd", required=True)
+    u = ags.add_parser("use", help="confirmar un agente existente para <arquetipo>@<target>")
+    u.add_argument("nombre"); u.add_argument("destino", help="<arquetipo>@<target> (target * = todos)")
+    u.set_defaults(fn=cmd_agent_use)
 
     r = sub.add_parser("reap", help="listar worktrees y jobs zombie (no borra solo)")
     r.add_argument("--force", action="store_true", help="limpiar jobs zombie del registro")
