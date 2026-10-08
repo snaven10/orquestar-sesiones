@@ -2105,10 +2105,17 @@ def cmd_harvest(args):
 def cmd_reap(args):
     """Lista worktrees y jobs zombie. NO borra nada sin --force."""
     cfg = load_cfg()
-    wts = _load("worktrees.json", {})
+    todos = _load("worktrees.json", {})
     jobs = _load("jobs.json", {})
+    # Con --ws explícito solo se mira (y se borra) ese workspace: un `reap --force` para
+    # limpiar un repo no puede llevarse de paso los worktrees de otro (2026-10-08).
+    def del_ws(m):
+        return not args.ws or m.get("ws", cfg["workspace_default"]) == WS_NOMBRE
+    wts = {w: m for w, m in todos.items() if del_ws(m)}
+    if args.ws:
+        print(f"\n  solo workspace `{WS_NOMBRE}` ({len(wts)} de {len(todos)} worktrees)")
 
-    zombis = [j for j, m in jobs.items() if not m.get("ok")]
+    zombis = [j for j, m in jobs.items() if not m.get("ok") and del_ws(m)]
     if zombis:
         print(f"\n  JOBS ZOMBIE (nunca arrancaron): {', '.join(zombis)}")
         if args.force:
@@ -2173,11 +2180,11 @@ def cmd_reap(args):
                                    + (f" && git -C {P} branch -d {shlex.quote(rama)}"
                                       if mergeada and rama else ""))
             if rc == 0:
-                wts.pop(w, None)
+                todos.pop(w, None)
                 print(f"  🗑  {w}" + (f"  (rama {rama} borrada)" if mergeada and rama else ""))
             else:
                 print(f"  ❌ {w}: {(e or o).strip()[:160]}")
-        _save("worktrees.json", wts)
+        _save("worktrees.json", todos)
     elif borrar:
         print(f"\n  {len(borrar)} borrable(s) según su política → orq reap --force")
     print("\n  Política: tras_merge = limpio y mergeado · si_limpio = limpio · nunca = nunca.")
