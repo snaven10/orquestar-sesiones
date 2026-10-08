@@ -78,6 +78,20 @@ CFG = {
             "disallowed": ["Write", "Edit"],
             "persist": False,
         },
+        "scout": {
+            "descripcion": "investiga el repo y propone un agente",
+            # solo lectura y solo consulta: el scout NO escribe nada. El draft lo escribe orq
+            # y el agente lo escribe `orq agent save` con el scope que elija el usuario.
+            "tools": ["Read", "Grep", "Glob", "Bash(git log*)", "Bash(ls*)", "Skill",
+                      "mcp__devctx__search", "mcp__devctx__recall", "mcp__devctx__build_context",
+                      "mcp__context7__resolve-library-id", "mcp__context7__query-docs"],
+            "disallowed": ["Write", "Edit"],
+            "persist": False,
+            "modelo": "sonnet",
+            "maquina": "local",                  # remota no tiene devctx
+            "costo": [0.15, 0.30],             # USD estimados: solo para mostrarlos en `need`
+            "timeout": 600,
+        },
     },
 
     # arquetipo@target -> specialist en ~/mi-empresa/.claude/agents/

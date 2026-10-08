@@ -28,6 +28,25 @@ def es_local(cfg):
     return not maq(cfg)["ssh"]
 
 
+def bin_claude(cfg, host=None):
+    """Binario de claude de la máquina. `ORQ_CLAUDE` lo reemplaza: es el gancho para probar
+    spawn/scout con un claude FALSO sin tocar roles.py y sin arriesgar una sesión real."""
+    return os.environ.get("ORQ_CLAUDE") or cfg["maquinas"][host or HOST]["claude"]
+
+
+def flags_tools(a, quote=True):
+    """`--allowedTools`/`--disallowedTools` de un arquetipo. Una sola construcción para spawn
+    y scout. `quote=True` cuando el comando viaja por un script de shell (los tools llevan
+    paréntesis y espacios: 'Bash(git *)'); `quote=False` cuando va como lista a subprocess."""
+    q = shlex.quote if quote else (lambda s: s)
+    fl = []
+    for tool in a["tools"]:
+        fl += ["--allowedTools", q(tool)]
+    for tool in a.get("disallowed", []):
+        fl += ["--disallowedTools", q(tool)]
+    return fl
+
+
 # Workspace activo. Lo fija main() con resolver_ws(); los comandos lo leen con ws_actual().
 WS_NOMBRE = None
 
@@ -441,8 +460,32 @@ def lineas_candidatos(clave, r, sangria="      "):
             out.append(f"{sangria}  {n:<34}{sc:<6.2f}[{', '.join(tg)}]")
         out.append(f"{sangria}confirmar: orq agent use {r['candidatos'][0][0]} {clave}")
     else:
-        out.append(f"{sangria}sin candidatos → orq scout {clave}")
+        out.append(f"{sangria}sin candidatos → candidato a scout (ver SCOUTS PROPUESTOS)")
     return out
+
+
+def scouts_de(faltantes, cfg):
+    """Escalón 3: un scout por faltante SIN candidatos del disco. Si hay un candidato, el
+    camino barato es `agent use`; investigar solo se ofrece cuando no queda otra."""
+    sc = cfg["arquetipos"]["scout"]
+    vistos, out = set(), []
+    for clave, rs in faltantes:
+        if rs["candidatos"] or clave in vistos:
+            continue
+        vistos.add(clave)
+        arq, tgt = clave.split("@", 1)
+        out.append({"arquetipo": arq, "target": tgt, "clave": clave, "costo": sc["costo"]})
+    return out
+
+
+def imprimir_scouts(scouts, tok):
+    if not scouts:
+        return
+    print("\n  🔎 SCOUTS PROPUESTOS (investigan el repo y dejan un BORRADOR; no guardan nada):")
+    for i, s_ in enumerate(scouts, 1):
+        c = s_["costo"]
+        print(f"    S{i} {s_['clave']:<40} ~${c[0]:.2f}–{c[1]:.2f}  local · sonnet · solo lectura")
+    print(f"    cuesta plata: necesita aval →  orq scout --token {tok} --only N")
 
 
 # ──────────────────── política de árbol ────────────────────
@@ -543,6 +586,8 @@ def cmd_need(args):
 
     recursos = detectar_recursos(intent, cfg)
     costo = 0.12 * len(propuesta)
+    tok = "T-" + secrets.token_hex(3)       # antes de imprimir: la sección de scouts lo cita
+    scouts = scouts_de(faltantes, cfg)
 
     # ── tabla ──
     print(f"\n  Intent: {intent}\n")
@@ -591,15 +636,15 @@ def cmd_need(args):
         print("  context7 + claude-automation-recommender) y PREGUNTAR el scope:")
         for l in texto_scopes(cfg):
             print(l)
+    imprimir_scouts(scouts, tok)
 
     conc = maq(cfg)["concurrencia"]
     print(f"\n  Concurrencia máx {HOST}: {conc}"
           f"{'  ⚠ la propuesta la excede, se parte en olas' if len(propuesta) > conc else ''}")
     print(f"  Costo estimado de arranque: ~${costo:.2f}  ({len(propuesta)} sesiones × ~$0.12)")
 
-    tok = "T-" + secrets.token_hex(3)
     _save(f"tokens/{tok}.json", {"intent": intent, "propuesta": propuesta, "ws": wsd["nombre"],
-                                 "recursos": [r[0] for r in recursos],
+                                 "recursos": [r[0] for r in recursos], "scouts": scouts,
                                  "emitido": time.time()})
     print(f"\n  token: {tok}   (vence en {TOKEN_TTL//60} min)")
     print("  [a] aprobar → orq spawn --token %s   [q]uitar N   [m]odificar N   [c]ancelar\n" % tok)
@@ -633,6 +678,8 @@ def need_de_plan(args, cfg):
     print(f"\n  PROPUESTA — verificá antes de confirmar:\n")
     print(f"    {'#':<3}{'TASK':<9}{'SPECIALIST':<38}{'ORIGEN':<9}{'MOD':<8}{'REPO':<18}{'QUÉ'}")
     faltan, faltan_t = [], {}
+    tok = "T-" + secrets.token_hex(3)
+    scouts = []
     for i, p_ in enumerate(prop, 1):
         sp = p_["specialist"]
         ok = sp in cats.get(p_["target"], {})
@@ -675,6 +722,9 @@ def need_de_plan(args, cfg):
             rs["aviso"] = None
             for l in lineas_candidatos(f"worker@{faltan_t[n]}", rs):
                 print(l)
+            scouts += scouts_de([(f"worker@{faltan_t[n]}", rs)], cfg)
+        scouts = [x for k, x in enumerate(scouts) if x["clave"] not in {y["clave"] for y in scouts[:k]}]
+        imprimir_scouts(scouts, tok)
     for r, n in por_repo.items():
         if n > 1:
             print(f"\n  ⚠ {n} sesiones sobre {r}. Si comparten árbol pueden tragarse")
@@ -687,9 +737,9 @@ def need_de_plan(args, cfg):
           f"{'   ⚠ la excede' if len(prop) > conc else ''}")
     print(f"  Costo estimado de arranque: ~${0.12*len(prop):.2f}")
 
-    tok = "T-" + secrets.token_hex(3)
     _save(f"tokens/{tok}.json", {"intent": f"PLAN-{args.plan} lote {data['lote']}",
                                  "propuesta": prop, "recursos": [], "plan": str(args.plan), "ws": wsd["nombre"],
+                                 "scouts": scouts,
                                  "plan_dir": pdir_nombre, "emitido": time.time()})
     print(f"\n  token: {tok}   (vence en {TOKEN_TTL//60} min)")
     print(f"  [a] aprobar → orq spawn --token {tok} ...   [c]ancelar\n")
@@ -737,7 +787,7 @@ def cmd_spawn(args):
     planes = rpath(cfg, wsd["plans"])
     add_dir = rpath(cfg, wsd["add_dir"]) if wsd["add_dir"] else None
     flags_add_dir = ["--add-dir", add_dir] if add_dir else []
-    claude = maq(cfg)["claude"]
+    claude = bin_claude(cfg)
     sesiones = _load("sessions.json", {})
     jobs = _load("jobs.json", {})
     padre = os.environ.get("CLAUDE_SESSION_ID") or sesion_claude_ancestro() or "orq-local"
@@ -923,10 +973,7 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
             flags += ["--agent", p["specialist"]]
         if p.get("modelo"):        # el PLAN declara el modelo por task
             flags += ["--model", shlex.quote(p["modelo"])]
-        for tool in a["tools"]:
-            flags += ["--allowedTools", shlex.quote(tool)]
-        for tool in a.get("disallowed", []):
-            flags += ["--disallowedTools", shlex.quote(tool)]
+        flags += flags_tools(a)
 
         # Una sesión persistente se resume SOLO si todavía existe en la máquina.
         # Si se borró (claude rm, limpieza, otra máquina), `--resume <id-muerto>`
@@ -1132,6 +1179,201 @@ def cmd_agent_use(args):
     guardar_overlay(ov)
     print(f"  ✅ {wsd['nombre']}: {args.destino} → {args.nombre}  ({ag['path']})"
           + (f"\n     reemplaza a `{previo}`" if previo and previo != args.nombre else ""))
+    return 0
+
+
+# ───────────────────────────── scout (escalón 3, PLAN-001 DD-4) ─────────────────────────────
+
+DRAFTS = STATE / "drafts"
+SKILL_RECOMMENDER = "claude-code-setup:claude-automation-recommender"
+TEMPLATES_RECOMMENDER = ("~/.claude/plugins/cache/claude-plugins-official/claude-code-setup/1.0.0/"
+                         "skills/claude-automation-recommender/references/subagent-templates.md")
+MODELOS_VALIDOS = ("sonnet", "opus", "haiku", "fable")
+
+
+def repo_local(cfg, target):
+    """Ruta LOCAL (local) del repo de un target: el scout siempre corre en local (tiene devctx)."""
+    w = ws_actual(cfg)
+    base = Path(expand(w["path"]))
+    return base if w["tipo"] == "repo" else base / target
+
+
+def dossier_scout(cfg, arq, target):
+    """Lo MECÁNICO que orq ya sabe del repo, para que el scout no gaste turnos (ni plata) en
+    redescubrirlo. Lo que requiere criterio (convenciones reales, stack) lo investiga él."""
+    repo = repo_local(cfg, target)
+    a = cfg["arquetipos"][arq]
+    L = [f"Repo: {repo}", f"Señales de stack (por archivos marcadores): "
+         f"{', '.join(señales_target(cfg, target)) or '(ninguna reconocida)'}"]
+    for nombre in ("CLAUDE.md", "AGENTS.md"):
+        f = repo / nombre
+        if f.is_file():
+            txt = f.read_text(errors="ignore")
+            L.append(f"\n--- {nombre} (primeros 4000 caracteres) ---\n{txt[:4000]}")
+    # el slug de ~/.claude/projects/ es la ruta con todo lo no alfanumérico convertido en `-`
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(repo.resolve()))
+    mem = Path.home() / ".claude" / "projects" / slug / "memory"
+    nombres = sorted(x.name for x in mem.glob("*.md")) if mem.is_dir() else []
+    L.append(f"\nMemoria de Claude de este repo ({mem}): "
+             + (", ".join(nombres[:40]) if nombres else "(no existe)"))
+    rc, log, _ = sh(["git", "-C", str(repo), "log", "--oneline", "-20"])
+    L.append("\nÚltimos commits:\n" + (log if rc == 0 and log else "(sin historial)"))
+    cat = catalogo_agentes(cfg, target)
+    L.append("\nAgentes que YA existen y no hay que duplicar: "
+             + ("; ".join(f"{x['name']} ({corta(x['description'], 70)})" for x in cat) or "(ninguno)"))
+    L.append(f"\nPermisos del arquetipo `{arq}` (el agente debe declarar `tools:` acorde):\n"
+             f"  tools: {', '.join(a['tools'])}\n"
+             f"  disallowed: {', '.join(a.get('disallowed', [])) or '(ninguno)'}")
+    return "\n".join(L)
+
+
+def prompt_scout(cfg, arq, target):
+    return f"""Sos un SCOUT: investigás un repo y diseñás UN agente (specialist) de Claude Code para el rol `{arq}` sobre `{target}`. NO tenés Write ni Edit y NO debés escribir archivos: tu entrega es el texto de tu respuesta final.
+
+PASOS
+1. Invocá la skill `{SKILL_RECOMMENDER}` y leé sus templates de subagentes en `{expand(TEMPLATES_RECOMMENDER)}`. Usalos como base de estructura, no los copies a ciegas.
+2. Consultá la memoria del proyecto con `mcp__devctx__recall` y explorá el código con `mcp__devctx__search` / `mcp__devctx__build_context`: buscá convenciones, decisiones y gotchas REALES de este repo.
+3. Con `mcp__context7__resolve-library-id` y `mcp__context7__query-docs` verificá las convenciones vigentes del stack que detectes.
+4. Usá el dossier de abajo (ya está calculado) antes de volver a leer lo mismo.
+
+REQUISITOS DEL AGENTE
+- Frontmatter YAML con `name` (kebab-case), `description` (cuándo usarlo, concreto), `model` (OBLIGATORIO y fijado: uno de {', '.join(MODELOS_VALIDOS)}) y `tools` acorde al arquetipo `{arq}`.
+- Cuerpo en español: rol, convenciones y comandos propios de ESTE repo, y qué NO debe hacer. Todo respaldado por evidencia que viste; si no lo viste, no lo afirmes.
+- UN único agente. No propongas hooks, skills ni MCPs.
+
+FORMATO DE SALIDA (obligatorio, sin nada dentro de los marcadores que no sea el contenido pedido)
+<<<AGENTE
+---
+name: ...
+description: ...
+model: ...
+tools: ...
+---
+(cuerpo del agente)
+AGENTE>>>
+<<<RAZONES
+(por qué este agente: qué archivos, memorias y docs lo respaldan; máximo 15 líneas)
+RAZONES>>>
+
+DOSSIER
+{dossier_scout(cfg, arq, target)}
+"""
+
+
+def _extraer(marca, texto):
+    m = re.search(rf"<<<{marca}[ \t]*\n(.*?)\n{marca}>>>", texto, re.S)
+    return m.group(1).strip("\n") if m else None
+
+
+def cmd_scout(args):
+    cfg = load_cfg()
+    if not args.token:
+        print("`orq scout` gasta tokens y necesita aval: corré `orq need` (propone los scouts "
+              "con su costo) y pasá su token: orq scout --token T-… [--only N]", file=sys.stderr)
+        return 2
+    tp = STATE / "tokens" / f"{args.token}.json"
+    if not tp.exists():
+        print(f"token {args.token} inválido o ya usado. Corré `orq need` primero.", file=sys.stderr)
+        return 2
+    t = json.loads(tp.read_text())
+    if time.time() - t["emitido"] > TOKEN_TTL:
+        tp.unlink()
+        print("token vencido. Corré `orq need` de nuevo.", file=sys.stderr)
+        return 2
+    global WS_NOMBRE
+    if t.get("ws"):
+        WS_NOMBRE = t["ws"]
+    scouts = t.get("scouts") or []
+    if not scouts:
+        print("este token no propone scouts (todo faltante tiene candidatos o specialist).", file=sys.stderr)
+        return 2
+    if args.destino:
+        ix = [i for i, s_ in enumerate(scouts, 1) if s_["clave"] == args.destino]
+    elif args.only:
+        ix = [int(x) for x in args.only.split(",") if x.strip().isdigit()]
+    else:
+        ix = [1] if len(scouts) == 1 else []
+    if len(ix) != 1 or not 1 <= ix[0] <= len(scouts):
+        print("elegí UN scout con --only N (o pasando <arq>@<target>):", file=sys.stderr)
+        for i, s_ in enumerate(scouts, 1):
+            print(f"  S{i} {s_['clave']}", file=sys.stderr)
+        return 2
+    sel = scouts[ix[0] - 1]
+    if sel.get("hecho"):
+        print(f"el scout {sel['clave']} ya corrió con este token (costó plata). "
+              f"Para repetirlo, `orq need` de nuevo.", file=sys.stderr)
+        return 2
+
+    arq, target, clave = sel["arquetipo"], sel["target"], sel["clave"]
+    sc = cfg["arquetipos"]["scout"]
+    claude = expand(bin_claude(cfg, sc["maquina"]))
+    if not (os.path.isfile(claude) and os.access(claude, os.X_OK)):
+        print(f"no encuentro el binario de claude en {claude}", file=sys.stderr)
+        return 1
+    repo = repo_local(cfg, target)
+    if not repo.is_dir():
+        print(f"el repo {repo} no existe en esta máquina", file=sys.stderr)
+        return 1
+
+    jid = secrets.token_hex(4)
+    jdir = STATE / "jobs" / jid
+    jdir.mkdir(parents=True, exist_ok=True)
+    (jdir / "prompt.txt").write_text(prompt_scout(cfg, arq, target))
+    cmd = [claude, "-p", "--output-format", "json", "--model", sc["modelo"],
+           "--name", f"orq-scout-{clave}", *flags_tools(sc, quote=False)]
+    # se marca ANTES de correr: si el scout falla igual costó, y reintentar sin avisar es gastar doble
+    sel["hecho"] = time.time()
+    tp.write_text(json.dumps(t, indent=2, ensure_ascii=False))
+    print(f"  🔎 scout {clave} · job {jid} · modelo {sc['modelo']} · máx {sc['timeout']}s …")
+    out_json = jdir / "out.json"
+    try:
+        with open(jdir / "prompt.txt") as fin, open(out_json, "w") as fo, open(jdir / "err.log", "w") as fe:
+            r = subprocess.run(cmd, cwd=str(repo), stdin=fin, stdout=fo, stderr=fe,
+                               timeout=sc["timeout"])
+    except subprocess.TimeoutExpired:
+        print(f"  ❌ el scout superó {sc['timeout']}s. Salida parcial: {out_json}", file=sys.stderr)
+        return 1
+    try:
+        d = json.loads(out_json.read_text())
+    except Exception:
+        print(f"  ❌ rc={r.returncode} y out.json no es JSON. Ver {out_json} y {jdir}/err.log",
+              file=sys.stderr)
+        return 1
+    # una sesión que falla (permisos, límite de uso) puede venir SIN `result`: se dice por qué
+    if d.get("is_error") or d.get("subtype", "success") != "success":
+        print(f"  ❌ el scout falló: subtype={d.get('subtype')} is_error={d.get('is_error')} "
+              f"{corta(str(d.get('result', '')), 200)}\n     Detalle: {out_json}", file=sys.stderr)
+        return 1
+    texto = d.get("result") or ""
+    agente, razones = _extraer("AGENTE", texto), _extraer("RAZONES", texto)
+    if not agente:
+        print(f"  ❌ el scout no devolvió el bloque <<<AGENTE … AGENTE>>>. No se escribe ningún "
+              f"draft. Respuesta completa en {out_json}", file=sys.stderr)
+        return 1
+    fm = parse_frontmatter(agente)
+    nombre = fm.get("name", "")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", nombre):
+        print(f"  ❌ el agente devuelto no tiene un `name` válido en el frontmatter "
+              f"({nombre!r}). Respuesta en {out_json}", file=sys.stderr)
+        return 1
+    DRAFTS.mkdir(parents=True, exist_ok=True)
+    draft = DRAFTS / f"{nombre}.md"
+    previo = draft.exists()
+    draft.write_text(agente.rstrip("\n") + "\n")
+    rz = DRAFTS / f"{nombre}.razones.md"
+    rz.write_text((razones or "(el scout no devolvió bloque RAZONES)").rstrip("\n") + "\n")
+
+    print(f"\n  ✅ draft{' (reemplaza al anterior)' if previo else ''}: {draft}")
+    print(f"     razones: {rz}")
+    for ln in (razones or "(sin RAZONES)").splitlines()[:10]:
+        print(f"       {ln}")
+    if fm.get("model") not in MODELOS_VALIDOS:
+        print(f"  ⚠ el draft NO fija `model:` válido ({fm.get('model') or 'falta'}): `agent save` lo "
+              f"va a rechazar; editá el draft antes.")
+    print("\n  Revisalo y elegí DÓNDE guardarlo (el scope lo decide el usuario, no hay default):")
+    for l in texto_scopes(cfg):
+        print(l)
+    print(f"\n  orq agent save {draft} {clave} --scope ?     (p | m | g)\n")
     return 0
 
 
@@ -1553,6 +1795,10 @@ def main():
     u = ags.add_parser("use", help="confirmar un agente existente para <arquetipo>@<target>")
     u.add_argument("nombre"); u.add_argument("destino", help="<arquetipo>@<target> (target * = todos)")
     u.set_defaults(fn=cmd_agent_use)
+    sc = sub.add_parser("scout", help="investigar un repo y dejar un draft de agente (cuesta; pide token)")
+    sc.add_argument("destino", nargs="?", help="<arquetipo>@<target> del scout propuesto en el token")
+    sc.add_argument("--token"); sc.add_argument("--only", help="N del scout a correr (S1, S2…)")
+    sc.set_defaults(fn=cmd_scout)
 
     r = sub.add_parser("reap", help="listar worktrees y jobs zombie (no borra solo)")
     r.add_argument("--force", action="store_true", help="limpiar jobs zombie del registro")
