@@ -4,7 +4,7 @@
 - **Especialista:** directo (orquestador)
 - **Proyecto:** orquestar-sesiones (`~/.claude/skills/orquestar-sesiones`), rama `main`
 - **Depende de:** — (primera del plan)
-- **Estado:** `pending`
+- **Estado:** `done`
 
 ---
 
@@ -16,17 +16,16 @@ Poder revertir cualquier cambio de este plan con git en vez de con `.bak` suelto
 - `__pycache__/` dentro de `assets/`.
 
 ## Pasos
-- [ ] `git init -b main` en `~/.claude/skills/orquestar-sesiones`, `.gitignore` con `__pycache__/` y `*.bak-*`.
-- [ ] Commit base `chore: snapshot inicial de orquestar-sesiones` (sin atribución de AI).
-- [ ] Capturar ANTES (sobre el commit base) en `~/.orq/regresion/antes/`: salida de `orq need` para 3 intents MI-EMPRESA representativos (backend, front, calidad) y `orq plan 133`. Sin `spawn`.
+- [x] `git init -b main` en `~/.claude/skills/orquestar-sesiones`, `.gitignore` con `__pycache__/` y `*.bak-*`.
+- [x] Commit base `chore: snapshot inicial de orquestar-sesiones` (sin atribución de AI).
+- [x] Capturar ANTES (sobre el commit base) en `~/.orq/regresion/antes/`: salida de `orq need` para 3 intents MI-EMPRESA representativos (backend, front, calidad) y `orq plan 133`. Sin `spawn`.
 
 ## Criterios de aceptación
-- [ ] `git status` limpio y `git log` con 1 commit que incluye SKILL.md, assets/*.py, references/, plans/.
+- [x] `git status` limpio y `git log` con 1 commit que incluye SKILL.md, assets/*.py, references/, plans/.
 
 ## Resultado
-<!-- SE LLENA AL CERRAR (estado done/skipped). Vacío mientras esté pending. -->
-- **Estado final:**
-- **Resumen:**
-- **Archivos tocados:**
-- **Verificado por:**
-
+- **Estado final:** `done`
+- **Resumen:** repo git local en la skill con commit base `a5febe6`; identidad git local copiada de api-backend. Capturas "antes" en `~/.orq/regresion/antes/` (need backend/front/calidad + plan 133, todos rc=0).
+- **Archivos tocados:** `.gitignore` (nuevo), `.git/`.
+- **Verificado por:** `git log` = 1 commit; 4 capturas de 20-25 líneas.
+- **Riesgos abiertos / siguiente:** las capturas dependen del estado vivo de los repos (rama, dirty, ACTIVO, `resume <sid>`) y del token: el diff de TASK-006 tiene que ignorar esas líneas o recapturar ambas al mismo tiempo.
