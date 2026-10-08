@@ -166,10 +166,17 @@ crearían worktrees sin política de destrucción (`--destruccion`). Esa políti
 pregunta **al crear cada worktree** y se guarda por worktree:
 
 ```
-[nunca]      no se borra solo; `orq reap` los lista y vos decidís
-[si_limpio]  al terminar la sesión, si no quedan cambios sin commitear
-[tras_merge] cuando su rama ya está integrada
+[nunca]      no se borra nunca; `orq reap` lo lista y vos decidís
+[si_limpio]  `orq reap --force` lo borra si está limpio (la rama solo si además está mergeada)
+[tras_merge] `orq reap --force` lo borra si está limpio Y su rama ya entró al HEAD del
+             checkout principal; borra también la rama (`branch -d`)
 ```
+
+Nada se destruye al terminar la sesión: la política se aplica cuando corrés
+`orq reap --force` (sin `--force` solo muestra qué es borrable). Un worktree con una
+sesión viva adentro **nunca** se toca — recién creado está limpio y su rama, sin
+commits, es ancestro de HEAD: pasaría por "mergeado". Y `worktree remove` va sin
+`--force` de git: si alguien lo ensució entre el chequeo y el borrado, se niega.
 
 ```bash
 orq spawn --token T-xxxxxx [--only N] [--sin-specialist N[,M]] \
@@ -183,7 +190,13 @@ sigue sin specialist, sale con `rc=2`, **no lanza ninguna** y lista las tres sal
 `need`, igual que `--only`). Ese flag es la aceptación explícita, por fila, de una sesión
 genérica sin criterio de dominio: se lo pedís al usuario, no lo ponés por tu cuenta.
 
-`orq reap` lista worktrees y jobs zombie. **Nunca borra solo.**
+`orq reap` lista worktrees y jobs zombie. **Nunca borra solo**: `orq reap --force` aplica
+la política de destrucción de cada worktree y limpia los jobs zombie del registro.
+
+**Cierre de tasks en workspaces `repo`.** El plan vive dentro del repo, así que el
+prompt le pide al worker que cierre la task en la copia del plan de **su worktree** y lo
+commitee en su rama: el cierre viaja con el merge y el árbol principal queda limpio.
+En `multi` (`~/mi-empresa`) `plans/` no es parte de ningún repo y se escribe donde siempre.
 
 ### 5. Cosechar y evolucionar
 

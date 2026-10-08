@@ -1208,15 +1208,26 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
                 sesiones[key] = sid
 
         jdir = rpath(cfg, f"~/.orq/jobs/{jid}")
+        # En un workspace `repo` el plan vive DENTRO del repo: si la sesión corre en un
+        # worktree, el cierre va a SU copia y viaja con la rama. Apuntarla al árbol
+        # principal lo dejaba sucio y había que commitear los cierres a mano
+        # (lotes 1-4 de claude-dashboard, 2026-10-08).
+        planes_t, cierre_en_rama = planes, False
+        raiz = principal.rstrip("/")
+        if wsd["tipo"] == "repo" and cwd != principal and planes.startswith(raiz + "/"):
+            planes_t, cierre_en_rama = cwd.rstrip("/") + planes[len(raiz):], True
         prompt = args.prompt or (
             f"Ejecutá TASK-{p['task']} de {t.get('plan_dir') or 'PLAN-' + p['plan']}.\n"
-            f"Fuente de verdad: {planes}/{t.get('plan_dir')}/tasks/TASK-{p['task']}-*.md "
+            f"Fuente de verdad: {planes_t}/{t.get('plan_dir')}/tasks/TASK-{p['task']}-*.md "
             f"y el master del plan (leé la sección `### Paralelismo`).\n"
             f"Trabajás en {cwd}, rama propia: commits ahí, conventional commits, SIN atribución "
             f"de AI, NUNCA push. No toques application*.properties.\n"
             f"Al cerrar: actualizá `Estado:` y llená `## Resultado` (Result Contract) del TASK "
-            f"en {planes}/, con SHAs y archivos. Si algo bloquea, dejá `blocked` con el motivo "
-            f"y pará." if p.get("plan") else t["intent"])
+            f"en {planes_t}/, con SHAs y archivos"
+            + (" y commitealo en tu rama (`docs(plan): ...`) para que viaje con el merge"
+               if cierre_en_rama else "")
+            + ". Si algo bloquea, dejá `blocked` con el motivo y pará."
+            if p.get("plan") else t["intent"])
         # El comando va a un SCRIPT, no a `bash -c '...'`: los flags llevan
         # shlex.quote (p.ej. 'Bash(git *)') y las comillas simples anidadas se
         # cancelarían entre sí, dejando el comando roto y sin error visible.
@@ -1315,9 +1326,14 @@ def cmd_status(args):
                 # Por ID, no por nombre: spawn pasa `--name` dos veces y gana el último,
                 # así que `bgname` nunca coincidía y toda sesión visible salía como FIN
                 # aunque siguiera trabajando (lote 1 de claude-dashboard, 2026-10-08).
-                v = (a.get("id"), a.get("state") or a.get("status"))
-                vis[a.get("id") or ""] = v
-                vis[a.get("name") or ""] = v
+                # Solo claves no vacías: las interactivas no traen `id`, y una clave ""
+                # emparejaba a todo job sin bgid con ellas (salían `busy` + `logs None`).
+                if not a.get("id"):
+                    continue
+                v = (a["id"], a.get("state") or a.get("status"))
+                vis[a["id"]] = v
+                if a.get("name"):
+                    vis[a["name"]] = v
         except Exception:
             pass
 
@@ -1328,11 +1344,15 @@ def cmd_status(args):
         extra = f" (rc={code})" if st == "FIN" and code not in ("0", "-") else ""
         # el fallback por nombre es solo para jobs viejos sin bgid; uno que nunca arrancó
         # NO se empareja (el nombre lo puede tener otra sesión viva)
-        clave_vis = bgid if bgid in vis else (m.get("bgname") if m.get("ok") else None)
+        clave_vis = bgid if bgid and bgid in vis else (m.get("bgname") if m.get("ok") else None)
         if m.get("ok") is False:
             st, extra = "FALLÓ AL LANZAR", f"   (ver ~/.orq/jobs/{j}/err.log)"
         elif m.get("host", HOST) != HOST:
             st, extra = f"en {m['host']}", f"   (orq --host {m['host']} status)"
+        elif "host" not in m and st == "PERDIDO":
+            # jobs anteriores al registro de host (48357e1): sin rastro acá, casi
+            # seguro corrieron en la otra máquina. No se inventa un estado.
+            st, extra = "SIN RASTRO", "   (job viejo sin host registrado, casi seguro de remota → orq --host remota status)"
         elif m.get("modo") == "visible" and clave_vis in vis:
             bid, bst = vis[clave_vis]
             # `attach` a una sesión TERMINADA la revive y, al salir, te deja una sesión
@@ -2102,10 +2122,40 @@ def cmd_reap(args):
         return 0
 
     print(f"\n  {'WORKTREE':<52}{'WS':<18}{'RAMA':<30}{'DESTRUCCIÓN':<12}{'ESTADO'}")
+    borrar = []
+    # Un worktree recién creado está limpio y su rama es ancestro de HEAD (todavía sin
+    # commits): pasaría por "mergeado". Nunca se toca uno con una sesión viva adentro.
+    _, aj, _ = remote(cfg, f"{bin_claude(cfg)} agents --json --all 2>/dev/null")
+    try:
+        vivos = [a.get("cwd") or "" for a in json.loads(aj)
+                 if (a.get("state") or a.get("status")) not in ("done", "idle", "stopped", "failed")]
+    except Exception:
+        vivos = None      # sin datos de sesiones no se borra nada
     for w, m in wts.items():
-        _, out, _ = remote(cfg, f"[ -d {shlex.quote(w)} ] && "
-                                f"git -C {shlex.quote(w)} status --porcelain | wc -l || echo NOEXISTE")
-        estado = "NO EXISTE" if "NOEXISTE" in out else f"dirty={out.strip()}"
+        W, R = shlex.quote(w), shlex.quote(m.get("rama") or "")
+        # Un solo viaje: existe, dirty, raíz del checkout principal y si la rama ya
+        # entró a lo que el principal tiene checkouteado (eso es "mergeado" acá).
+        _, out, _ = remote(cfg, f"""
+        if [ ! -d {W} ]; then echo NOEXISTE; exit 0; fi
+        echo "DIRTY=$(git -C {W} status --porcelain | wc -l)"
+        P=$(cd {W} && cd "$(git rev-parse --git-common-dir)/.." && pwd)
+        echo "PRINCIPAL=$P"
+        git -C "$P" merge-base --is-ancestor {R} HEAD 2>/dev/null && echo MERGEADA=1 || echo MERGEADA=0""")
+        kv = dict(l.split("=", 1) for l in out.split() if "=" in l)
+        if "NOEXISTE" in out:
+            estado = "NO EXISTE"
+        else:
+            dirty, mergeada = int(kv.get("DIRTY", "1")), kv.get("MERGEADA") == "1"
+            estado = f"dirty={dirty}" + (" mergeada" if mergeada else "")
+            pol = m.get("destruccion")
+            # tras_merge: limpio Y mergeado. si_limpio: limpio (la rama solo se borra
+            # si además está mergeada). nunca: nunca. `branch -d` igual se niega solo.
+            ocupado = vivos is None or any(c == w or c.startswith(w.rstrip("/") + "/") for c in vivos)
+            if ocupado:
+                estado += "  (sesión viva o sin datos: no se toca)"
+            elif dirty == 0 and ((pol == "tras_merge" and mergeada) or pol == "si_limpio"):
+                borrar.append((w, kv.get("PRINCIPAL", ""), m.get("rama"), mergeada))
+                estado += "  → se borra" if args.force else "  → borrable (--force)"
         # el registro tiene dos formas: una sesión (per-task) o varias (worktree compartido)
         ses = m.get("sesiones") or ([m["sesion"]] if m.get("sesion") else [])
         print(f"  {corta(w,50):<52}{corta(m.get('ws', cfg['workspace_default']),16):<18}"
@@ -2113,9 +2163,25 @@ def cmd_reap(args):
               f"{str(m.get('destruccion','?')):<12}{estado}")
         if ses:
             print(f"      sesiones: {', '.join(ses)}")
-    print("\n  Nada se borra solo. Para eliminar uno:")
-    rm = "git -C <repo-principal> worktree remove <ruta>"
-    print(f"    {rm}\n" if es_local(load_cfg()) else f"    ssh remota '{rm}'\n")
+    if borrar and args.force:
+        print()
+        for w, principal, rama, mergeada in borrar:
+            P, W = shlex.quote(principal), shlex.quote(w)
+            # sin --force en git: si alguien ensució el worktree entre el chequeo y
+            # acá, `worktree remove` se niega en vez de tirar trabajo
+            rc, o, e = remote(cfg, f"git -C {P} worktree remove {W}"
+                                   + (f" && git -C {P} branch -d {shlex.quote(rama)}"
+                                      if mergeada and rama else ""))
+            if rc == 0:
+                wts.pop(w, None)
+                print(f"  🗑  {w}" + (f"  (rama {rama} borrada)" if mergeada and rama else ""))
+            else:
+                print(f"  ❌ {w}: {(e or o).strip()[:160]}")
+        _save("worktrees.json", wts)
+    elif borrar:
+        print(f"\n  {len(borrar)} borrable(s) según su política → orq reap --force")
+    print("\n  Política: tras_merge = limpio y mergeado · si_limpio = limpio · nunca = nunca.")
+    print("  Sin --force no se borra nada.\n")
     return 0
 
 
@@ -2178,8 +2244,9 @@ def main():
     sc.add_argument("--token"); sc.add_argument("--only", help="N del scout a correr (S1, S2…)")
     sc.set_defaults(fn=cmd_scout)
 
-    r = sub.add_parser("reap", help="listar worktrees y jobs zombie (no borra solo)")
-    r.add_argument("--force", action="store_true", help="limpiar jobs zombie del registro")
+    r = sub.add_parser("reap", help="listar worktrees y jobs zombie; con --force aplica la política de destrucción")
+    r.add_argument("--force", action="store_true",
+                   help="borrar worktrees según su --destruccion y limpiar jobs zombie del registro")
     r.set_defaults(fn=cmd_reap)
 
     args = ap.parse_args()
