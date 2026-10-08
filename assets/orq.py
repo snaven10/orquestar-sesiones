@@ -28,6 +28,28 @@ def es_local(cfg):
     return not maq(cfg)["ssh"]
 
 
+def confiado(ruta):
+    """¿Claude Code aceptó el trust dialog en `ruta` o en algún padre? (~/.claude.json)"""
+    try:
+        proy = json.loads((Path.home() / ".claude.json").read_text()).get("projects", {})
+    except (OSError, ValueError):
+        return True     # sin poder leerlo no se bloquea: el err.log del job lo va a decir
+    r = Path(ruta).resolve()
+    return any(proy.get(str(x), {}).get("hasTrustDialogAccepted") for x in (r, *r.parents))
+
+
+def excluir_trees(cfg, principal, wdir):
+    """Un worktree DENTRO del repo principal (workspaces `repo`) aparecería como untracked:
+    se excluye por .git/info/exclude, que es local y no ensucia el .gitignore del repo."""
+    pr, wd = Path(expand(principal)).resolve(), Path(expand(wdir)).resolve()
+    if pr not in wd.parents:
+        return
+    rel = wd.relative_to(pr).parts[0] + "/"
+    remote(cfg, f'gd=$(git -C {shlex.quote(str(pr))} rev-parse --git-common-dir) && '
+                f"grep -qx {shlex.quote(rel)} \"$gd/info/exclude\" 2>/dev/null || "
+                f"echo {shlex.quote(rel)} >> \"$gd/info/exclude\"")
+
+
 def bin_claude(cfg, host=None):
     """Binario de claude de la máquina. `ORQ_CLAUDE` lo reemplaza: es el gancho para probar
     spawn/scout con un claude FALSO sin tocar roles.py y sin arriesgar una sesión real."""
@@ -132,7 +154,12 @@ def ws_actual(cfg):
     w.setdefault("add_dir", None)           # solo MI-EMPRESA lo necesita (monorepo sin .git)
     w.setdefault("agents", f"{w['path']}/.claude/agents")
     w.setdefault("plans", f"{w['path']}/plans")
-    w.setdefault("worktrees_en", f"~/.orq/trees/{nombre}")
+    # Los worktrees tienen que vivir donde Claude Code ya confía: `--bg` rechaza un cwd sin
+    # el trust dialog aceptado ("Workspace not trusted"), y la confianza se hereda de los
+    # padres. En un `repo` van DENTRO del repo (`.orq-trees/`, excluido de git); en ~/.orq
+    # no confía nadie (primer spawn de claude-dashboard, 2026-10-08: las 2 sesiones murieron).
+    w.setdefault("worktrees_en", f"{w['path']}/.orq-trees" if w.get("tipo") == "repo"
+                                 else f"~/.orq/trees/{nombre}")
     w["ruido"] = {r.lower() for r in w.get("ruido", [])}
     return w
 
@@ -991,6 +1018,20 @@ def cmd_spawn(args):
 
     wts = _load("worktrees.json", {})
 
+    # Trust ANTES de crear worktrees: si no, quedan ramas y worktrees huérfanos de sesiones
+    # que nunca arrancaron. Solo se puede leer en local (~/.claude.json local).
+    if args.visible and es_local(cfg):
+        dirs = {expand(wsd["worktrees_en"]) if (args.arbol == "worktree" or args.rama)
+                else expand(wsd["path"])}
+        sin_trust = [d for d in dirs if not confiado(d)]
+        if sin_trust:
+            for d in sin_trust:
+                print(f"  ❌ Claude Code no confía en {d} (ni en ningún padre): `--bg` muere con "
+                      f"\"Workspace not trusted\".", file=sys.stderr)
+            print("     Abrí `claude` una vez en ese directorio (o en un padre) y aceptá el "
+                  "trust dialog, o mové `worktrees_en` a un directorio de confianza.", file=sys.stderr)
+            return 2
+
     for p in propuesta:
         arq, tgt = p["arquetipo"], p["target"]
         key = clave_ws(cfg, f"p{p['plan']}-task{p['task']}@{tgt}" if p.get("plan") else
@@ -1059,6 +1100,7 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
                 print(f"  ❌ {key}: worktree {wdir} → {est}, ancestro de {base}: {kv.get('ANCESTRO')}")
                 print(f"     {out_w[-300:]}")
                 continue
+            excluir_trees(cfg, principal, wdir)
             enlazar_agentes(cfg, wdir)
             cwd = wdir
             reg = wts.setdefault(wdir, {"target": tgt, "rama": args.rama, "desde": base, "ws": wsd["nombre"],
@@ -1101,6 +1143,7 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
             if rc_w != 0 or "fatal" in (out_w + err_w).lower():
                 print(f"  ❌ no pude crear el worktree de {key}: {(out_w or err_w)[:200]}")
                 continue
+            excluir_trees(cfg, principal, wdir)
             enlazar_agentes(cfg, wdir)
             cwd = wdir
             wts[wdir] = {"target": tgt, "rama": rama, "desde": args.base or p.get("branch"),
@@ -1223,9 +1266,15 @@ echo LANZADO {jid}
     _save("jobs.json", jobs)
     _save("worktrees.json", wts)
     tp.unlink()   # token de un solo uso
-    print(f"\n  {len(lanzados)} sesiones lanzadas. Orquestador: {padre}")
+    oks = [l for l in lanzados if l[3]]
+    fallidos = [l for l in lanzados if not l[3]]
+    print(f"\n  {len(oks)} de {len(lanzados)} sesiones lanzadas. Orquestador: {padre}")
+    for jid, key, _, _ in fallidos:
+        # antes decía "N sesiones lanzadas" contando las muertas: el motivo está en err.log
+        _, e, _ = remote(cfg, f"tail -2 {rpath(cfg, f'~/.orq/jobs/{jid}')}/err.log 2>/dev/null")
+        print(f"  ❌ {key}: {e.strip()[:200] or 'sin err.log'}")
     print(f"  Seguimiento:  orq status   ·   orq logs <job>")
-    return 0
+    return 1 if fallidos else 0
 
 
 # ─────────────────────── status / ls / tree ───────────────────────

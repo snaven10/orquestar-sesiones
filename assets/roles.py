@@ -45,9 +45,8 @@ CFG = {
         },
         "claude-dashboard": {
             "path": "~/personal/claude-dashboard", "tipo": "repo",
-            # repo suelto: sin add_dir (el agente de proyecto resuelve por cwd) y sus worktrees
-            # fuera del repo para no ensuciarlo
-            "worktrees_en": "~/.orq/trees/claude-dashboard",
+            # repo suelto: sin add_dir (el agente de proyecto resuelve por cwd). Sus worktrees
+            # van al default de `repo` (<repo>/.orq-trees): ~/.orq/trees no tiene trust y --bg muere.
         },
     },
     "workspace_default": "mi-empresa",
