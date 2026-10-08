@@ -33,7 +33,7 @@ y habilita repos sueltos como `~/personal/claude-dashboard`.
 | Task | Qué | Especialista | Depende de | Estado |
 |------|-----|--------------|------------|--------|
 | TASK-000 | Snapshot git de la skill + captura "antes" de salidas MI-EMPRESA | directo (orquestador) | — | `done` |
-| TASK-001 | Workspaces declarativos: `multi` (~/mi-empresa) y `repo` (suelto) | general-purpose (sonnet) | TASK-000 | `pending` |
+| TASK-001 | Workspaces declarativos: `multi` (~/mi-empresa) y `repo` (suelto) | general-purpose (sonnet) | TASK-000 | `done` |
 | TASK-002 | Escalones 1-2: overlay, verificación de existencia, match por afinidad, `agent use` | general-purpose (sonnet) | TASK-001 | `pending` |
 | TASK-003 | Escalón 3: arquetipo `scout` + `orq scout` con token | general-purpose (sonnet) | TASK-002 | `pending` |
 | TASK-004 | Gate en spawn: sin specialist → rc=2 salvo `--sin-specialist` | general-purpose (sonnet) | TASK-002 | `pending` |
