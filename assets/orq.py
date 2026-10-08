@@ -29,13 +29,27 @@ def es_local(cfg):
 
 
 def confiado(ruta):
-    """¿Claude Code aceptó el trust dialog en `ruta` o en algún padre? (~/.claude.json)"""
+    """¿`--bg` va a aceptar una sesión con cwd en `ruta`? Regla DOCUMENTADA
+    (code.claude.com/docs/en/permissions#project-allow-rules-and-workspace-trust):
+    dentro de un repo el trust se busca en la raíz del repo y, en un worktree, en la del
+    checkout PRINCIPAL; fuera de un repo se hereda del padre, salvo a través de un repo
+    anidado. `claude -p` no lo exige. Medido 2026-10-08: 3 spawns --visible de
+    claude-dashboard murieron con "Workspace not trusted" aunque ~/personal era de confianza.
+    No hay flag/setting/env para pre-aceptarlo: hay que abrir `claude` en esa raíz una vez."""
     try:
         proy = json.loads((Path.home() / ".claude.json").read_text()).get("projects", {})
     except (OSError, ValueError):
         return True     # sin poder leerlo no se bloquea: el err.log del job lo va a decir
+    raiz = _raiz_repo(Path(ruta)) if Path(ruta).exists() else None
+    if raiz:
+        return bool(proy.get(str(raiz), {}).get("hasTrustDialogAccepted"))
     r = Path(ruta).resolve()
-    return any(proy.get(str(x), {}).get("hasTrustDialogAccepted") for x in (r, *r.parents))
+    for i, x in enumerate((r, *r.parents)):
+        if proy.get(str(x), {}).get("hasTrustDialogAccepted"):
+            return True
+        if i > 0 and (x / ".git").exists():
+            return False
+    return False
 
 
 def excluir_trees(cfg, principal, wdir):
@@ -154,12 +168,9 @@ def ws_actual(cfg):
     w.setdefault("add_dir", None)           # solo MI-EMPRESA lo necesita (monorepo sin .git)
     w.setdefault("agents", f"{w['path']}/.claude/agents")
     w.setdefault("plans", f"{w['path']}/plans")
-    # Los worktrees tienen que vivir donde Claude Code ya confía: `--bg` rechaza un cwd sin
-    # el trust dialog aceptado ("Workspace not trusted"), y la confianza se hereda de los
-    # padres. En un `repo` van DENTRO del repo (`.orq-trees/`, excluido de git); en ~/.orq
-    # no confía nadie (primer spawn de claude-dashboard, 2026-10-08: las 2 sesiones murieron).
-    w.setdefault("worktrees_en", f"{w['path']}/.orq-trees" if w.get("tipo") == "repo"
-                                 else f"~/.orq/trees/{nombre}")
+    # Dónde vive el worktree NO cambia el trust: Claude Code lo resuelve en la raíz del repo
+    # PRINCIPAL (ver `confiado`). Se dejan en ~/.orq/trees para no ensuciar el workspace.
+    w.setdefault("worktrees_en", f"~/.orq/trees/{nombre}")
     w["ruido"] = {r.lower() for r in w.get("ruido", [])}
     return w
 
@@ -1021,15 +1032,15 @@ def cmd_spawn(args):
     # Trust ANTES de crear worktrees: si no, quedan ramas y worktrees huérfanos de sesiones
     # que nunca arrancaron. Solo se puede leer en local (~/.claude.json local).
     if args.visible and es_local(cfg):
-        dirs = {expand(wsd["worktrees_en"]) if (args.arbol == "worktree" or args.rama)
-                else expand(wsd["path"])}
+        dirs = {ws_ruta_target(cfg, p_["target"]) for p_ in propuesta}
         sin_trust = [d for d in dirs if not confiado(d)]
         if sin_trust:
             for d in sin_trust:
-                print(f"  ❌ Claude Code no confía en {d} (ni en ningún padre): `--bg` muere con "
+                print(f"  ❌ Claude Code no confía en {d}: `--bg` muere con "
                       f"\"Workspace not trusted\".", file=sys.stderr)
-            print("     Abrí `claude` una vez en ese directorio (o en un padre) y aceptá el "
-                  "trust dialog, o mové `worktrees_en` a un directorio de confianza.", file=sys.stderr)
+            print("     El trust de un worktree es el del repo PRINCIPAL. Abrí `claude` una vez en "
+                  "esa raíz y aceptá el trust dialog (no hay forma no interactiva documentada), "
+                  "o lanzá sin --visible: `claude -p` no lo exige.", file=sys.stderr)
             return 2
 
     for p in propuesta:
