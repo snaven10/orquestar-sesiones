@@ -25,7 +25,7 @@ Poder revertir cualquier cambio de este plan con git en vez de con `.bak` suelto
 
 ## Resultado
 - **Estado final:** `done`
-- **Resumen:** repo git local en la skill con commit base `a5febe6`; identidad git local copiada de api-backend. Capturas "antes" en `~/.orq/regresion/antes/` (need backend/front/calidad + plan 133, todos rc=0).
+- **Resumen:** repo git local en la skill con commit base `a621d0d`; identidad git local copiada de api-backend. Capturas "antes" en `~/.orq/regresion/antes/` (need backend/front/calidad + plan 133, todos rc=0).
 - **Archivos tocados:** `.gitignore` (nuevo), `.git/`.
 - **Verificado por:** `git log` = 1 commit; 4 capturas de 20-25 líneas.
 - **Riesgos abiertos / siguiente:** las capturas dependen del estado vivo de los repos (rama, dirty, ACTIVO, `resume <sid>`) y del token: el diff de TASK-006 tiene que ignorar esas líneas o recapturar ambas al mismo tiempo.

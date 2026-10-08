@@ -1350,7 +1350,7 @@ def cmd_status(args):
         elif m.get("host", HOST) != HOST:
             st, extra = f"en {m['host']}", f"   (orq --host {m['host']} status)"
         elif "host" not in m and st == "PERDIDO":
-            # jobs anteriores al registro de host (48357e1): sin rastro acá, casi
+            # jobs anteriores al registro de host (3ff9db1): sin rastro acá, casi
             # seguro corrieron en la otra máquina. No se inventa un estado.
             st, extra = "SIN RASTRO", "   (job viejo sin host registrado, casi seguro de remota → orq --host remota status)"
         elif m.get("modo") == "visible" and clave_vis in vis:
