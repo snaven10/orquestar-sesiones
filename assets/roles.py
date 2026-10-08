@@ -7,7 +7,6 @@ CFG = {
         "local": {
             "ssh": [],                         # vacío = local: `bash -s` sin SSH
             "claude": "~/.local/bin/claude",
-            "workspace": "~/mi-empresa",
             # 20 cores / 47 GB, pero ~24 GB libres con el trabajo propio (node, java,
             # MCPs). Cada sesión ≈1 GB (claude + sus MCP) + 2-3 GB si compila/testea
             # Quarkus. Y PLAN-043 DD-7 serializa las extracciones: el 2º slot es para
@@ -19,16 +18,39 @@ CFG = {
             "ssh": ["ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
                     "-o", "ExitOnForwardFailure=no", "remota"],
             "claude": "~/.local/bin/claude",   # NO está en el PATH no-interactivo
-            "workspace": "~/mi-empresa",
             "concurrencia": 4,                 # 8 cores/31GB; el techo real es el rate limit
             "tiene_devctx": False,             # los aprendizajes vuelven por `orq harvest`
         },
     },
 
-    # `~/mi-empresa` NO es repo git: cada proyecto es su propio repo, así que el escaneo de
-    # agentes se detiene en la raíz del repo hijo y nunca llega a ~/mi-empresa/.claude/agents/.
-    # Sin este flag el agente NO resuelve y cae a general-purpose EN SILENCIO.
-    "add_dir_obligatorio": "~/mi-empresa",
+    # Workspaces: DÓNDE trabaja orq. Selección: `--ws` -> el ws cuyo `path` contiene el cwd
+    # -> `workspace_default`. `path` es relativo al HOME de la máquina que corre las sesiones
+    # (remota también tiene ~/mi-empresa), por eso se conserva el `~`.
+    #   multi: dir con varios repos hijos (los targets se descubren: subdirs con .git).
+    #   repo:  un repo suelto; el target es el propio repo.
+    "workspaces": {
+        "mi-empresa": {
+            "path": "~/mi-empresa", "tipo": "multi",
+            # `~/mi-empresa` NO es repo git: cada proyecto es su propio repo, así que el escaneo de
+            # agentes se detiene en la raíz del repo hijo y nunca llega a ~/mi-empresa/.claude/agents/.
+            # Sin este flag el agente NO resuelve y cae a general-purpose EN SILENCIO.
+            "add_dir": "~/mi-empresa",
+            "agents": "~/mi-empresa/.claude/agents",
+            "plans": "~/mi-empresa/plans",
+            "worktrees_en": "~/mi-empresa/.orq-trees",
+            # tokens que no distinguen nada entre repos de MI-EMPRESA
+            "ruido": ["mi-empresa", "srv", "backend", "microservice", "microservicio", "back", "end"],
+            # las claves de ~/.orq/*.json de MI-EMPRESA son anteriores a los workspaces: no se migran
+            "claves_sin_prefijo": True,
+        },
+        "claude-dashboard": {
+            "path": "~/personal/claude-dashboard", "tipo": "repo",
+            # repo suelto: sin add_dir (el agente de proyecto resuelve por cwd) y sus worktrees
+            # fuera del repo para no ensuciarlo
+            "worktrees_en": "~/.orq/trees/claude-dashboard",
+        },
+    },
+    "workspace_default": "mi-empresa",
 
     "arquetipos": {
         "worker": {
@@ -113,7 +135,6 @@ CFG = {
 
     "preflight": {
         "actividad_reciente_min": 30,   # reflog/procesos: señal de que alguien está trabajando
-        "worktrees_en": "~/mi-empresa/.orq-trees",
     },
 
     # ── Política de árbol (definida por el usuario, 2026-09-22) ──────────────

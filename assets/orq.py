@@ -28,6 +28,57 @@ def es_local(cfg):
     return not maq(cfg)["ssh"]
 
 
+# Workspace activo. Lo fija main() con resolver_ws(); los comandos lo leen con ws_actual().
+WS_NOMBRE = None
+
+
+def resolver_ws(nombre_flag, cfg):
+    """Qué workspace usa esta corrida: `--ws` -> el que contiene el cwd -> default.
+
+    Con varios que contienen el cwd gana el de `path` más largo (el más específico).
+    """
+    wss = cfg["workspaces"]
+    nombre = nombre_flag or os.environ.get("ORQ_WS")
+    if nombre:
+        if nombre not in wss:
+            sys.exit(f"workspace `{nombre}` no existe. Declarados: {', '.join(wss)}")
+        return nombre
+    cwd = Path.cwd().resolve()
+    cands = []
+    for n, w in wss.items():
+        raiz = Path(expand(w["path"])).resolve()
+        if cwd == raiz or raiz in cwd.parents:
+            cands.append((len(str(raiz)), n))
+    return max(cands)[1] if cands else cfg["workspace_default"]
+
+
+def ws_actual(cfg):
+    """Config normalizada del workspace activo, con las rutas ya derivadas del `path`."""
+    nombre = WS_NOMBRE or cfg["workspace_default"]
+    w = dict(cfg["workspaces"][nombre])
+    w["nombre"] = nombre
+    w.setdefault("add_dir", None)           # solo MI-EMPRESA lo necesita (monorepo sin .git)
+    w.setdefault("agents", f"{w['path']}/.claude/agents")
+    w.setdefault("plans", f"{w['path']}/plans")
+    w.setdefault("worktrees_en", f"~/.orq/trees/{nombre}")
+    w["ruido"] = {r.lower() for r in w.get("ruido", [])}
+    return w
+
+
+def ws_ruta_target(cfg, target):
+    """Ruta (en la máquina activa) de un target. En `repo` el target ES el workspace."""
+    w = ws_actual(cfg)
+    base = rpath(cfg, w["path"])
+    return base if w["tipo"] == "repo" else f"{base}/{target}"
+
+
+def clave_ws(cfg, clave):
+    """Clave de estado de una sesión. Prefijada por ws salvo en MI-EMPRESA: `worker@X` de
+    sessions.json existe desde antes de los workspaces y migrarla rompería los resume."""
+    w = ws_actual(cfg)
+    return clave if w.get("claves_sin_prefijo") else f"{w['nombre']}:{clave}"
+
+
 def sesion_claude_ancestro():
     """sessionId del proceso claude que invoca a orq. CLAUDE_SESSION_ID no existe en el
     shell de la Bash tool; ~/.claude/sessions/<pid>.json sí, y el pid es un ancestro."""
@@ -139,7 +190,10 @@ def preflight(repo_path, cfg, host=None):
 
 def descubrir_targets(cfg, host=None):
     """Repos git bajo el workspace. Se DESCUBREN, no se declaran."""
-    ws = rpath(cfg, maq(cfg)["workspace"])
+    w = ws_actual(cfg)
+    if w["tipo"] == "repo":
+        return [os.path.basename(w["path"].rstrip("/"))]   # el repo es su propio target
+    ws = rpath(cfg, w["path"])
     # El `for` devuelve el estado del ULTIMO comando: si el ultimo directorio del
     # workspace no es repo, `[ -e ] &&` da falso y el loop sale 1 — y se descartaban
     # los 34 targets buenos. Con `if/fi` el rc solo refleja fallas REALES (ssh caido).
@@ -160,11 +214,9 @@ def detectar_recursos(intent, cfg):
 
 
 ic = lambda s: s.lower()
-# tokens que no distinguen nada: todos los repos los comparten
-RUIDO = {"mi-empresa", "srv", "backend", "microservice", "microservicio", "back", "end"}
 
 
-def menciona(target, intent):
+def menciona(target, intent, ruido=frozenset()):
     """¿El intent nombra este repo? Por token, no por substring.
 
     `api-plantillas` no es substring de "backfill de plantillas", pero el token
@@ -173,7 +225,7 @@ def menciona(target, intent):
     low = ic(intent)
     if ic(target) in low:
         return True
-    toks = [t for t in re.split(r"[_\-]+", ic(target)) if len(t) >= 4 and t not in RUIDO]
+    toks = [t for t in re.split(r"[_\-]+", ic(target)) if len(t) >= 4 and t not in ruido]
     # El cierre \b es obligatorio: sin él el token es un PREFIJO y matchea de más.
     # Caso real: el token `config` de `auth-service-config` disparaba con un
     # intent que decía `configuracionDependencia`, y proponía worker+reviewer en un
@@ -251,13 +303,14 @@ def cmd_need(args):
         return need_de_plan(args, cfg)
     intent = args.intent
     sesiones = _load("sessions.json", {})
+    wsd = ws_actual(cfg)
     targets = descubrir_targets(cfg)
 
     # qué targets toca este trabajo: mención explícita, o los que tengan cambios
-    tocados = [t for t in targets if menciona(t, intent)]
+    tocados = [t for t in targets if menciona(t, intent, wsd["ruido"])]
     estados = {}
     for t in targets:
-        pf = preflight(f"{maq(cfg)['workspace']}/{t}", cfg)
+        pf = preflight(ws_ruta_target(cfg, t), cfg)
         if pf:
             estados[t] = pf
     if not tocados:
@@ -274,7 +327,8 @@ def cmd_need(args):
             key = f"{arq}@{t}"
             pf = estados.get(t, {})
             persist = cfg["arquetipos"][arq]["persist"]
-            estado = ("resume " + sesiones[key][:8]) if (persist and key in sesiones) else "crear"
+            ks = clave_ws(cfg, key)
+            estado = ("resume " + sesiones[ks][:8]) if (persist and ks in sesiones) else "crear"
             modo = clasificar(arq, intent, pf, n_workers_mismo_repo=args.paralelo)
             arbol, necesita_wt, pregunta = decidir_arbol(modo, cfg, pf)
             propuesta.append({"arquetipo": arq, "target": t, "specialist": sp,
@@ -340,7 +394,7 @@ def cmd_need(args):
     print(f"  Costo estimado de arranque: ~${costo:.2f}  ({len(propuesta)} sesiones × ~$0.12)")
 
     tok = "T-" + secrets.token_hex(3)
-    _save(f"tokens/{tok}.json", {"intent": intent, "propuesta": propuesta,
+    _save(f"tokens/{tok}.json", {"intent": intent, "propuesta": propuesta, "ws": wsd["nombre"],
                                  "recursos": [r[0] for r in recursos],
                                  "emitido": time.time()})
     print(f"\n  token: {tok}   (vence en {TOKEN_TTL//60} min)")
@@ -361,9 +415,9 @@ def need_de_plan(args, cfg):
     if not prop:
         print(f"  el lote {data['lote']} no tiene tasks pendientes"); return 1
 
-    existentes = {f.stem for f in AGENTS_DIR.glob("*.md") if ".bak" not in f.name}
-    ws = maq(cfg)["workspace"]
-    pfs = {r: (preflight(f"{ws}/{r}", cfg) or {}) for r in por_repo}
+    wsd = ws_actual(cfg)
+    existentes = {f.stem for f in Path(expand(wsd["agents"])).glob("*.md") if ".bak" not in f.name}
+    pfs = {r: (preflight(ws_ruta_target(cfg, r), cfg) or {}) for r in por_repo}
 
     print(f"\n  PLAN-{args.plan} · lote {data['lote']}  —  {len(prop)} sesiones\n")
     print(f"  Estado real en {HOST}:")
@@ -418,7 +472,7 @@ def need_de_plan(args, cfg):
 
     tok = "T-" + secrets.token_hex(3)
     _save(f"tokens/{tok}.json", {"intent": f"PLAN-{args.plan} lote {data['lote']}",
-                                 "propuesta": prop, "recursos": [], "plan": str(args.plan),
+                                 "propuesta": prop, "recursos": [], "plan": str(args.plan), "ws": wsd["nombre"],
                                  "plan_dir": pdir_nombre, "emitido": time.time()})
     print(f"\n  token: {tok}   (vence en {TOKEN_TTL//60} min)")
     print(f"  [a] aprobar → orq spawn --token {tok} ...   [c]ancelar\n")
@@ -433,11 +487,14 @@ def enlazar_agentes(cfg, wdir):
     default template", o sea genérica. En `-p` sí resuelve; el problema es sólo de
     --bg. Se le cuelga al worktree su propio `.claude/agents` apuntando al del
     workspace. Verificado: sin el symlink falla, con él arranca especializada."""
-    ws = rpath(cfg, maq(cfg)["workspace"])
+    w = ws_actual(cfg)
+    if w["tipo"] == "repo":
+        return      # el `.claude/agents` del repo ya viaja en el checkout del worktree
+    agents = rpath(cfg, w["agents"])
     W = shlex.quote(wdir)
     remote(cfg, f"""
 mkdir -p {W}/.claude
-ln -sfn {shlex.quote(ws)}/.claude/agents {W}/.claude/agents
+ln -sfn {shlex.quote(agents)} {W}/.claude/agents
 gd=$(git -C {W} rev-parse --git-dir 2>/dev/null) && mkdir -p "$gd/info" && \
   grep -qx '.claude/' "$gd/info/exclude" 2>/dev/null || echo '.claude/' >> "$gd/info/exclude"
 """)
@@ -455,7 +512,14 @@ def cmd_spawn(args):
         print("token vencido. Corré `orq need` de nuevo.", file=sys.stderr)
         return 2
 
-    ws = rpath(cfg, maq(cfg)["workspace"])
+    # El token manda: se aprobó para UN workspace y spawn no puede caer en otro por el cwd.
+    global WS_NOMBRE
+    if t.get("ws"):
+        WS_NOMBRE = t["ws"]
+    wsd = ws_actual(cfg)
+    planes = rpath(cfg, wsd["plans"])
+    add_dir = rpath(cfg, wsd["add_dir"]) if wsd["add_dir"] else None
+    flags_add_dir = ["--add-dir", add_dir] if add_dir else []
     claude = maq(cfg)["claude"]
     sesiones = _load("sessions.json", {})
     jobs = _load("jobs.json", {})
@@ -492,14 +556,14 @@ def cmd_spawn(args):
         return 2
 
     if t.get("plan_dir"):
-        pd = f"{rpath(cfg, maq(cfg)['workspace'])}/plans/{t['plan_dir']}"
+        pd = f"{planes}/{t['plan_dir']}"
         rc_p, out_p, _ = remote(cfg, f"[ -d {shlex.quote(pd)} ] && "
                                      f"ls {shlex.quote(pd)}/tasks/*.md 2>/dev/null | wc -l || echo NOEXISTE")
         if "NOEXISTE" in out_p or out_p.strip() in ("", "0"):
             print(f"  ❌ El PLAN no existe en {HOST}: {pd}", file=sys.stderr)
             print(f"     Las sesiones corren ALLÁ y no lo encontrarían. Sincronizalo:", file=sys.stderr)
             print(f"     scp -r -o ClearAllForwardings=yes "
-                  f"~/mi-empresa/plans/{t['plan_dir']} remota:mi-empresa/plans/", file=sys.stderr)
+                  f"{wsd['plans']}/{t['plan_dir']} remota:{wsd['plans'].removeprefix('~/')}/", file=sys.stderr)
             return 2
         print(f"  ✓ PLAN presente en {HOST} ({out_p.strip()} tasks)")
 
@@ -507,12 +571,12 @@ def cmd_spawn(args):
 
     for p in propuesta:
         arq, tgt = p["arquetipo"], p["target"]
-        key = (f"p{p['plan']}-task{p['task']}@{tgt}" if p.get("plan") else
-               f"task{p['task']}@{tgt}" if p.get("task") else f"{arq}@{tgt}")
+        key = clave_ws(cfg, f"p{p['plan']}-task{p['task']}@{tgt}" if p.get("plan") else
+                       f"task{p['task']}@{tgt}" if p.get("task") else f"{arq}@{tgt}")
         a = cfg["arquetipos"][arq]
         jid = secrets.token_hex(4)
         bgname = None
-        principal = f"{ws}/{tgt}"
+        principal = ws_ruta_target(cfg, tgt)
         cwd = principal
 
         # --arbol otra:<rama> => checkout EN EL ÁRBOL PRINCIPAL. Eso muta un árbol
@@ -540,7 +604,7 @@ def cmd_spawn(args):
         # ramas (p.ej. PLAN-040 TASK-008: "uno por repo, desde gitlab/staging").
         if args.rama and p["modo"] != "auditar_sin_commitear":
             base = args.base or p.get("branch") or "HEAD"
-            wdir = (f"{rpath(cfg, cfg['preflight']['worktrees_en'])}/{tgt}/"
+            wdir = (f"{rpath(cfg, wsd['worktrees_en'])}/{tgt}/"
                     f"{re.sub(r'[^A-Za-z0-9._-]+', '-', args.rama)}")
             W, P, R, B = map(shlex.quote, (wdir, principal, args.rama, base))
             # la ref remota local puede estar VIEJA (remota tenía gitlab/staging=f5b7ba8f
@@ -575,7 +639,7 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
                 continue
             enlazar_agentes(cfg, wdir)
             cwd = wdir
-            reg = wts.setdefault(wdir, {"target": tgt, "rama": args.rama, "desde": base,
+            reg = wts.setdefault(wdir, {"target": tgt, "rama": args.rama, "desde": base, "ws": wsd["nombre"],
                                         "base_sha": kv.get("BASE"), "sesiones": [],
                                         "destruccion": args.destruccion, "creado": time.time()})
             if key not in reg.setdefault("sesiones", []):   # sin duplicar por relanzamiento
@@ -588,7 +652,7 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
         usa_wt = not args.rama and (p.get("worktree") or args.arbol == "worktree")
         if usa_wt:
             slug = re.sub(r"[^a-z0-9]+", "-", f"{arq}-{int(time.time())%100000}".lower())
-            wdir = f"{rpath(cfg, cfg['preflight']['worktrees_en'])}/{tgt}/{slug}"
+            wdir = f"{rpath(cfg, wsd['worktrees_en'])}/{tgt}/{slug}"
             if p["modo"] == "auditar_commiteado":
                 # detached en el SHA: revisión determinista, no crea rama
                 add = f"git -C {shlex.quote(principal)} worktree add --detach " \
@@ -600,7 +664,7 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
                 base = args.base or p.get("branch") or "HEAD"
                 if p.get("plan"):
                     slug = f"plan-{p['plan']}-task-{p['task']}"
-                    wdir = f"{rpath(cfg, cfg['preflight']['worktrees_en'])}/{tgt}/{slug}"
+                    wdir = f"{rpath(cfg, wsd['worktrees_en'])}/{tgt}/{slug}"
                     rama = f"feature/{slug}"
                 else:
                     rama = f"orq/{slug}"
@@ -618,7 +682,7 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
             enlazar_agentes(cfg, wdir)
             cwd = wdir
             wts[wdir] = {"target": tgt, "rama": rama, "desde": args.base or p.get("branch"),
-                         "sesion": key, "destruccion": args.destruccion,
+                         "sesion": key, "ws": wsd["nombre"], "destruccion": args.destruccion,
                          "creado": time.time()}
             print(f"  ➕ worktree {wdir}  [{rama}]  destrucción={args.destruccion}")
 
@@ -635,9 +699,9 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
         # En --bg el prompt posicional se IGNORA: va por redirección de stdin.
         if args.visible:
             bgname = f"orq-{key}-{jid}"
-            flags = [claude, "--bg", "--name", shlex.quote(bgname), "--add-dir", ws]
+            flags = [claude, "--bg", "--name", shlex.quote(bgname), *flags_add_dir]
         else:
-            flags = [claude, "-p", "--output-format", "json", "--add-dir", ws]
+            flags = [claude, "-p", "--output-format", "json", *flags_add_dir]
         if p["specialist"]:
             flags += ["--agent", p["specialist"]]
         if p.get("modelo"):        # el PLAN declara el modelo por task
@@ -671,12 +735,12 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
         jdir = rpath(cfg, f"~/.orq/jobs/{jid}")
         prompt = args.prompt or (
             f"Ejecutá TASK-{p['task']} de {t.get('plan_dir') or 'PLAN-' + p['plan']}.\n"
-            f"Fuente de verdad: {ws}/plans/{t.get('plan_dir')}/tasks/TASK-{p['task']}-*.md "
+            f"Fuente de verdad: {planes}/{t.get('plan_dir')}/tasks/TASK-{p['task']}-*.md "
             f"y el master del plan (leé la sección `### Paralelismo`).\n"
             f"Trabajás en {cwd}, rama propia: commits ahí, conventional commits, SIN atribución "
             f"de AI, NUNCA push. No toques application*.properties.\n"
             f"Al cerrar: actualizá `Estado:` y llená `## Resultado` (Result Contract) del TASK "
-            f"en {ws}/plans/, con SHAs y archivos. Si algo bloquea, dejá `blocked` con el motivo "
+            f"en {planes}/, con SHAs y archivos. Si algo bloquea, dejá `blocked` con el motivo "
             f"y pará." if p.get("plan") else t["intent"])
         # El comando va a un SCRIPT, no a `bash -c '...'`: los flags llevan
         # shlex.quote (p.ej. 'Bash(git *)') y las comillas simples anidadas se
@@ -727,7 +791,7 @@ echo LANZADO {jid}
                   "────────────────────────────", file=sys.stderr)  # el --resume fantasma
         rc, out, err = remote(cfg, script, timeout=120)
         ok = "LANZADO" in out
-        jobs[jid] = {"key": key, "specialist": p["specialist"], "cwd": cwd,
+        jobs[jid] = {"key": key, "ws": wsd["nombre"], "specialist": p["specialist"], "cwd": cwd,
                      "padre": padre, "lanzado": time.time(), "ok": ok,
                      "modo": "visible" if args.visible else "headless",
                      "bgname": bgname}
@@ -767,7 +831,7 @@ def cmd_status(args):
         except Exception:
             pass
 
-    print(f"\n  {'JOB':<10}{'SESIÓN':<40}{'SPECIALIST':<28}{'ESTADO'}")
+    print(f"\n  {'JOB':<10}{'WS':<18}{'SESIÓN':<40}{'SPECIALIST':<28}{'ESTADO'}")
     for line in out.splitlines():
         j, st, code = (line.split() + ["", ""])[:3]
         m = jobs.get(j, {})
@@ -784,19 +848,24 @@ def cmd_status(args):
             dentro = f"cd {m.get('cwd','~')} && ~/.local/bin/{acc}"
             st, extra = bst, (f"   {dentro}" if es_local(cfg)
                               else f"   ssh remota-tty '{dentro}'")
-        print(f"  {j:<10}{corta(m.get('key',''),38):<40}"
+        print(f"  {j:<10}{corta(m.get('ws', cfg['workspace_default']),16):<18}"
+              f"{corta(m.get('key',''),38):<40}"
               f"{corta(m.get('specialist') or '-',26):<28}{st}{extra}")
     print()
     return 0
 
 
 def cmd_ls(args):
+    cfg = load_cfg()
     ses = _load("sessions.json", {})
     if not ses:
         print("  sin sesiones vinculadas todavía"); return 0
-    print(f"\n  {'SESIÓN':<40}{'SESSION-ID'}")
+    print(f"\n  {'WS':<18}{'SESIÓN':<40}{'SESSION-ID'}")
     for k, v in sorted(ses.items()):
-        print(f"  {k:<40}{v}")
+        # sin prefijo `<ws>:` = clave anterior a los workspaces = el default
+        ws_k, _, resto = k.partition(":")
+        ws_k, k = (ws_k, resto) if resto and ws_k in cfg["workspaces"] else (cfg["workspace_default"], k)
+        print(f"  {corta(ws_k,16):<18}{k:<40}{v}")
     print()
     return 0
 
@@ -816,8 +885,15 @@ def cmd_tree(args):
 
 # ───────────────────────────── harvest ─────────────────────────────
 
-PLANS = Path.home() / "mi-empresa" / "plans"
-AGENTS_DIR = Path.home() / "mi-empresa" / ".claude" / "agents"
+def ws_plans(cfg):
+    """Dir de PLANs del workspace activo (se leen LOCAL: harvest/plan corren en local)."""
+    return Path(expand(ws_actual(cfg)["plans"]))
+
+
+def ws_agents(cfg):
+    """Dir de agentes del workspace activo (local)."""
+    return Path(expand(ws_actual(cfg)["agents"]))
+
 
 # 25+ variantes reales -> 5. Se normaliza, nunca se confía en el string crudo.
 def primer_valor(v):
@@ -904,7 +980,7 @@ def modelos_del_master(master):
 
 def cargar_plan(numero, cfg):
     """Devuelve (pdir, master, tasks, lotes) de un PLAN. Compartido por `plan` y `need`."""
-    cands = sorted(PLANS.glob(f"PLAN-{int(numero):03d}*"))
+    cands = sorted(ws_plans(cfg).glob(f"PLAN-{int(numero):03d}*"))
     if not cands:
         return None, None, [], []
     pdir = cands[0]
@@ -971,9 +1047,9 @@ def cmd_plan(args):
     se muestra lo que se puede parsear y se marca lo ambiguo para que lo lea el usuario.
     """
     cfg = load_cfg()
-    cands = sorted(PLANS.glob(f"PLAN-{int(args.numero):03d}*"))
+    cands = sorted(ws_plans(cfg).glob(f"PLAN-{int(args.numero):03d}*"))
     if not cands:
-        print(f"  no encontré PLAN-{args.numero} en {PLANS}"); return 1
+        print(f"  no encontré PLAN-{args.numero} en {ws_plans(cfg)}"); return 1
     pdir = cands[0]
     # El master se llama IGUAL que la carpeta. `sorted()` agarraría PLAN-N-design.md.
     master = pdir / f"{pdir.name}.md"
@@ -1026,7 +1102,7 @@ def cmd_plan(args):
         print("    `done` NO libera dependientes: verificá contra git antes de arrancar lo que sigue.")
 
     # ── specialists que el PLAN pide ──
-    existentes = {f.stem for f in AGENTS_DIR.glob("*.md") if ".bak" not in f.name}
+    existentes = {f.stem for f in ws_agents(cfg).glob("*.md") if ".bak" not in f.name}
     pedidos = Counter(primer_nombre(t["especialista"]) for t in tasks if t["especialista"])
     print(f"\n  SPECIALISTS QUE PIDE EL PLAN:")
     faltan = []
@@ -1146,14 +1222,15 @@ def cmd_reap(args):
         print("\n  sin worktrees registrados\n")
         return 0
 
-    print(f"\n  {'WORKTREE':<52}{'RAMA':<30}{'DESTRUCCIÓN':<12}{'ESTADO'}")
+    print(f"\n  {'WORKTREE':<52}{'WS':<18}{'RAMA':<30}{'DESTRUCCIÓN':<12}{'ESTADO'}")
     for w, m in wts.items():
         _, out, _ = remote(cfg, f"[ -d {shlex.quote(w)} ] && "
                                 f"git -C {shlex.quote(w)} status --porcelain | wc -l || echo NOEXISTE")
         estado = "NO EXISTE" if "NOEXISTE" in out else f"dirty={out.strip()}"
         # el registro tiene dos formas: una sesión (per-task) o varias (worktree compartido)
         ses = m.get("sesiones") or ([m["sesion"]] if m.get("sesion") else [])
-        print(f"  {corta(w,50):<52}{corta(m.get('rama','?'),28):<30}"
+        print(f"  {corta(w,50):<52}{corta(m.get('ws', cfg['workspace_default']),16):<18}"
+              f"{corta(m.get('rama','?'),28):<30}"
               f"{str(m.get('destruccion','?')):<12}{estado}")
         if ses:
             print(f"      sesiones: {', '.join(ses)}")
@@ -1169,6 +1246,8 @@ def main():
     ap = argparse.ArgumentParser(prog="orq", description="orquestador de sesiones Claude")
     ap.add_argument("--host", choices=["local", "remota"],
                     help="dónde corren las sesiones (default: ORQ_HOST o local)")
+    ap.add_argument("--ws", help="workspace declarado en roles.py (default: el que contiene "
+                                 "el cwd, si no workspace_default)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     n = sub.add_parser("need", help="resolver qué sesiones hacen falta y emitir token")
@@ -1208,6 +1287,8 @@ def main():
     global HOST
     if args.host:
         HOST = args.host
+    global WS_NOMBRE
+    WS_NOMBRE = resolver_ws(args.ws, load_cfg())
     sys.exit(args.fn(args))
 
 
