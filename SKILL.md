@@ -42,12 +42,21 @@ escape. Si te ves pensando "esta es obvia, la levanto directo" — pará. No lo 
 Por qué 2 en local: ~24 GB libres con el trabajo propio; cada sesión ≈1 GB + 2-3 GB si compila
 Quarkus; y PLAN-043 DD-7 serializa extracciones, así que el 2º slot es review/inventario.
 
-```bash
-orq need "<lo que se va a trabajar>"
-```
+**Workspace.** `roles.py["workspaces"]` declara dónde se trabaja. Hay dos tipos:
+`multi` (un directorio con varios repos adentro; los targets son los subdirectorios con
+`.git`) y `repo` (un repo suelto; el target es el propio repo). Ejemplos hoy declarados:
+`mi-empresa` (multi, `~/mi-empresa`) y `claude-dashboard` (repo).
 
-Devuelve la propuesta: arquetipos, targets, specialists, worktrees, locks de recurso,
-costo estimado, y **qué se queda afuera y por qué**.
+Cómo se elige, en este orden: `orq --ws <nombre> ...` → `ORQ_WS` → el workspace cuyo `path`
+contiene el cwd (gana el más largo) → `workspace_default`. El token guarda el `ws`, así que
+`spawn` lo respeta aunque cambies de directorio entre `need` y `spawn`.
+`--add-dir` solo se pasa si el workspace declara `add_dir` (hoy `mi-empresa`); en un `repo`
+el agente de proyecto resuelve por cwd y no hace falta.
+
+```bash
+orq need "<lo que se va a trabajar>"                    # ws por cwd / default
+orq --ws claude-dashboard need "<lo que se va a trabajar>"
+```
 
 ### 2. Presentarla COMPLETA al usuario
 
@@ -63,40 +72,69 @@ Pegá la tabla tal cual. No la resumás, no la "mejorés". El usuario tiene que 
 **Después de pegar la tabla, PARÁ.** No sigas con código, ni explicaciones, ni acciones.
 Esperá que el usuario verifique, modifique o cancele.
 
-### 3. Si falta un specialist
+### 3. Si falta un specialist: 3 escalones
 
-El resolver te va a marcar `❌ sin specialist`. Ahí **proponés cómo debería quedar el
-agente**, armado de estas fuentes en orden:
+`need` resuelve cada sesión en este orden y te dice en qué escalón cayó (columna ORIGEN).
+**Nunca se autoasigna nada que el usuario no haya confirmado**, y **nunca hay agentes
+globales automáticos**: un agente de stack global existe solo si el usuario elige `[g]` al guardarlo.
 
-1. **DevCtxEngine** — `search` y `recall` sobre el target. Es la fuente más rica.
-2. **Memoria histórica** — `~/.claude/projects/*/memory/*.md` (la auto-memory vieja,
-   apagada para escribir pero legible). Los nombres de archivo son oro.
-3. **context7** — docs del stack detectado, si el MCP está disponible.
-4. **claude-automation-recommender** — skill del plugin `claude-code-setup`.
-   Es **genérica**: razona por señales de stack, no por dominio de negocio. Sirve para
-   repos sin historia. Es read-only, no escribe nada.
+**Escalón 1 — confirmado.** Está en `~/.orq/specialists.json` o en `roles.py["specialists"]`
+**y el `.md` existe** en un dir alcanzable. Se usa. No hacés nada.
 
-Proponé el frontmatter completo:
+**Escalón 2 — candidatos en disco.** El mapeo no existe, pero hay agentes `.md` (del repo,
+del workspace o de `~/.claude/agents`) con afinidad ≥ umbral con las señales del target
+(`pom.xml`, `angular.json`, `go.mod`…). `need` muestra el top 3 con puntaje y tags:
 
-```yaml
-name: tickets-backend-specialist
-description: ...          # cuándo delegarle
-model: sonnet             # sonnet | opus | haiku | fable
-tools: Read, Grep, Glob, Edit, Write, Bash
-disallowedTools: ...      # para auditores: Write, Edit
-mcpServers: [devctx]      # evita el race del MCP compartido
-permissionMode: default
+```
+java-backend-specialist   0.83  [java, quarkus, oracle]
 ```
 
-Y **SIEMPRE preguntá dónde guardarlo**, mostrando el scope detectado y su costo:
+Qué hacés vos: **pegás los candidatos con su puntaje y tags, y PARÁS.** Que el usuario
+confirme cuál (o ninguno). Recién con su OK:
 
-| Opción | Dónde | Resuelve desde | Costo |
-|---|---|---|---|
-| `[p]` proyecto | `<repo>/.claude/agents/` | cwd en ese repo | ninguno |
-| `[m]` monorepo | `~/mi-empresa/.claude/agents/` | **solo con `--add-dir ~/mi-empresa`** | el flag es obligatorio |
-| `[g]` global | `~/.claude/agents/` | cualquier cwd | contamina todos tus proyectos |
+```bash
+orq agent use <nombre> <arquetipo>@<target>     # target * = todos
+```
 
-**Mencionalo siempre, aunque parezca obvio.** El usuario decide, vos no.
+Queda en `specialists.json`; la próxima vez es escalón 1.
+
+**Escalón 3 — scout.** No hay candidatos. `need` agrega "SCOUTS PROPUESTOS", un scout por
+faltante, con su costo. El scout es una sesión `claude -p` de solo lectura (en local, tiene
+devctx) que investiga el repo y deja un **borrador**; no escribe nada más. Qué hacés vos:
+
+1. Presentás el scout **con su costo** y **PARÁS por el aval**. Cuesta plata: es un spawn.
+2. Con el aval: `orq scout <arq>@<target> --token T-xxxxxx [--only S1]`. Un scout por
+   invocación. Se marca hecho en el token y **no se repite** con ese token; el token en sí
+   no se consume, sirve después para `spawn`.
+3. Leés el draft (`~/.orq/drafts/<name>.md`) y las razones (`<name>.razones.md`).
+4. Presentás el agente **COMPLETO** (frontmatter + cuerpo), las razones con su evidencia, y
+   la tabla de scopes válidos **para ese ws**, y **PARÁS a preguntar el scope**.
+5. Solo con la respuesta:
+
+```bash
+orq agent save <draft> <arquetipo>@<target> --scope p|m|g [--force]
+```
+
+**El scope SIEMPRE se pregunta. No hay default**: sin `--scope`, `save` sale con `rc=2`.
+Mostralo aunque parezca obvio; el usuario decide, vos no.
+
+| Opción | Dónde | Resuelve desde | Costo | Ws |
+|---|---|---|---|---|
+| `[p]` proyecto | `<repo>/.claude/agents/` | cwd en ese repo | ninguno; queda sin commitear (`save` no commitea) | multi y repo |
+| `[m]` monorepo | `<ws.agents>/` (ej. `~/mi-empresa/.claude/agents/`) | **solo con `--add-dir`** | el flag es obligatorio | **solo multi** con `add_dir` |
+| `[g]` global | `~/.claude/agents/` | cualquier cwd | contamina todos tus proyectos | multi y repo |
+
+`save` valida `name` (kebab-case), `description` y `model` ∈ sonnet|opus|haiku|fable
+(obligatorio), no pisa un archivo sin `--force`, y avisa si otro agente homónimo de scope
+más cercano lo tapa. Sin `<arq>@<target>` guarda el archivo pero **no registra el mapeo**
+(después hay que correr `orq agent use`).
+
+**De dónde sale el contenido del draft.** Las fuentes de siempre las usa ahora el **scout**, no
+vos a mano: DevCtxEngine (`search`/`recall`/`build_context`), memoria histórica
+(`~/.claude/projects/*/memory/*.md`: los nombres de archivo son oro), context7 (docs del
+stack) y la skill `claude-code-setup:claude-automation-recommender` (genérica, razona por
+señales de stack, read-only). Si el scout devuelve algo sin `model:` te lo avisa: no lo
+guardes así.
 
 ### 4. Definir el árbol y levantar
 
@@ -126,9 +164,16 @@ pregunta **al crear cada worktree** y se guarda por worktree:
 ```
 
 ```bash
-orq spawn --token T-xxxxxx [--only N] \
+orq spawn --token T-xxxxxx [--only N] [--sin-specialist N[,M]] \
     [--arbol rama_actual|otra:<nombre>|worktree] [--destruccion nunca|si_limpio|tras_merge]
 ```
+
+**Gate de specialists.** Antes de lanzar nada, `spawn` re-resuelve cada fila (si entre
+`need` y `spawn` se confirmó un match o se guardó un agente, se usa solo). Si alguna sesión
+sigue sin specialist, sale con `rc=2`, **no lanza ninguna** y lista las tres salidas:
+`agent use`, `scout` → `agent save`, o `--sin-specialist N[,M]` (N = número de fila de
+`need`, igual que `--only`). Ese flag es la aceptación explícita, por fila, de una sesión
+genérica sin criterio de dominio: se lo pedís al usuario, no lo ponés por tu cuenta.
 
 `orq reap` lista worktrees y jobs zombie. **Nunca borra solo.**
 
@@ -146,12 +191,22 @@ resultado de `orq`. Si no cosechás, se pierden.
 
 ## Trampas verificadas
 
-**`--add-dir ~/mi-empresa` es obligatorio.** `~/mi-empresa` no es un repo git; cada proyecto MI-EMPRESA
-es su propio repo. El escaneo de agentes sube desde el cwd hasta la **raíz del repo** y
-se detiene ahí — nunca llega a `~/mi-empresa/.claude/agents/`. Sin el flag:
-`--agent 'java-backend-specialist' not found`, y **cae a `general-purpose` en silencio**:
-una sesión que parece funcionar y entrega trabajo sin criterio de dominio. El script
-verifica que el agente resolvió; no confíes en que el flag esté puesto.
+**En un workspace `multi` con `add_dir`, el flag es obligatorio** (ejemplo MI-EMPRESA:
+`--add-dir ~/mi-empresa`). `~/mi-empresa` no es un repo git; cada proyecto es su propio repo. El
+escaneo de agentes sube desde el cwd hasta la **raíz del repo** y se detiene ahí — nunca
+llega a `~/mi-empresa/.claude/agents/`. Sin el flag: `--agent 'java-backend-specialist' not found`,
+y **cae a `general-purpose` en silencio**: una sesión que parece funcionar y entrega trabajo
+sin criterio de dominio. `orq` lo pasa solo si el ws lo declara; en un `repo` no aplica.
+
+**Nombre mapeado sin `.md` = faltante.** Que un nombre figure en `roles.py` o en el overlay
+no significa que exista. Si el archivo no está, el resolver lo marca faltante con aviso y el
+gate de `spawn` frena (también en `need --plan`, si el PLAN declara un specialist inexistente).
+
+**El catálogo se lee del disco LOCAL**, aunque uses `--host remota`: no mira los agentes que
+haya en remota. Si el agente solo existe allá, `orq` lo va a dar por faltante.
+
+**`ORQ_CLAUDE` es solo para tests**: reemplaza el binario de `claude` (para probar con uno
+falso). No lo uses en operación real.
 
 **SSH a remota necesita `ClearAllForwardings`.** El `~/.ssh/config` tiene
 `RemoteForward 2223` + `ExitOnForwardFailure yes`: si el puerto está ocupado, la conexión
@@ -193,4 +248,4 @@ tools en `roles.py`.
 ## Recursos
 
 - **Script**: [assets/orq.py](assets/orq.py) · **Política**: [assets/roles.py](assets/roles.py)
-- **Los 16 escenarios y su mitigación**: [references/escenarios.md](references/escenarios.md)
+- **Los 17 escenarios y su mitigación**: [references/escenarios.md](references/escenarios.md)

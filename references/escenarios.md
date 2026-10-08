@@ -1,4 +1,4 @@
-# Los 16 escenarios y su mitigación
+# Los 17 escenarios y su mitigación
 
 Ninguno es hipotético. Cada uno se verificó en vivo en remota, está documentado en la
 memoria de DevCtxEngine, o salió del corpus de 1166 archivos TASK en 151 PLANes.
@@ -105,6 +105,16 @@ toma 8080/4200; dos `qa` en paralelo pelean y el segundo muere.
 `~/.devctx` vacío. `settings.json` de 113 bytes: solo tema y notificaciones.
 Los workers remotos van ciegos y sus aprendizajes **no pueden volver por `remember`**.
 **Mitigación**: `orq harvest` es la única vía de retorno. Sin cosecha, se pierden.
+
+### 17. Specialist faltante / workspace ajeno a MI-EMPRESA
+Verificado al sumar el workspace `claude-dashboard` (repo suelto): `roles.py` mapeaba
+`reviewer` a `code-reviewer`, que ahí no existe; y un nombre mapeado sin `.md` hacía que
+`claude --agent` no lo encontrara y cayera a `general-purpose` en silencio. En un repo sin
+historia de agentes tampoco hay candidatos que proponer.
+**Mitigación**: el mapeo se verifica contra el catálogo en disco (nombre sin `.md` =
+faltante). Tres escalones: confirmado → candidatos por afinidad (`orq agent use`, el usuario
+confirma) → scout con aval (`orq scout`) y `orq agent save --scope` con el scope siempre
+preguntado. `spawn` frena con `rc=2` salvo `--sin-specialist N,M`.
 
 ---
 
