@@ -748,6 +748,81 @@ def need_de_plan(args, cfg):
 
 # ───────────────────────────── spawn ─────────────────────────────
 
+# agentes que claude trae de fábrica: no son un .md en disco pero `--agent` los resuelve
+AGENTES_BUILTIN = {"general-purpose"}
+
+
+def specialist_vigente(p, cfg):
+    """Specialist con el que se lanzaría una sesión de la propuesta, RE-RESUELTO ahora: entre
+    `need` y `spawn` el usuario pudo hacer `agent use`/`agent save`. Si el PLAN lo declaró por
+    nombre se respeta ese nombre (no se sustituye por otro); basta con que exista. None = falta."""
+    if p.get("plan"):
+        n = p.get("specialist")
+        ok = n and (n in AGENTES_BUILTIN or
+                    any(a["name"] == n for a in catalogo_agentes(cfg, p["target"])))
+        return n if ok else None
+    return resolver_specialist(p["arquetipo"], p["target"], cfg)["nombre"]
+
+
+def gate_specialists(args, t, propuesta, cfg, tp):
+    """DD-6: spawn ya no levanta en silencio una sesión genérica. Devuelve rc=2 si alguna
+    sesión no tiene specialist y el usuario no la aceptó con `--sin-specialist N`. Los N son
+    las filas de `need` (misma numeración que --only). Efecto: fija p['specialist'] con el
+    nombre re-resuelto y p['aceptado'] para las genéricas aceptadas."""
+    total = len(t["propuesta"])
+    acepta = set(t.get("sin_specialist", []))
+    if args.sin_specialist:
+        try:
+            nuevos = {int(x) for x in args.sin_specialist.split(",") if x.strip()}
+        except ValueError:
+            print(f"--sin-specialist `{args.sin_specialist}` inválido: se esperan números de fila, ej. 2 o 1,3",
+                  file=sys.stderr)
+            return 2
+        fuera = sorted(n for n in nuevos if not 1 <= n <= total)
+        if fuera:
+            print(f"--sin-specialist: fila(s) {fuera} fuera de la propuesta (1..{total})", file=sys.stderr)
+            return 2
+        acepta |= nuevos
+    elegidas = {id(p) for p in propuesta}
+    faltan = []
+    for i, p in enumerate(t["propuesta"], 1):
+        if id(p) not in elegidas:
+            continue
+        p["specialist"] = specialist_vigente(p, cfg)
+        if p["specialist"]:
+            continue
+        if i in acepta:
+            p["aceptado"] = True
+        else:
+            faltan.append((i, p))
+    if faltan:
+        print(f"  ❌ {len(faltan)} sesión(es) SIN specialist. No se levanta nada: una sesión "
+              f"genérica no conoce el repo.", file=sys.stderr)
+        scouts = {s_["clave"]: k for k, s_ in enumerate(t.get("scouts") or [], 1)}
+        for i, p in faltan:
+            clave = f"{p['arquetipo']}@{p['target']}"
+            rs = resolver_specialist(p["arquetipo"], p["target"], cfg)
+            print(f"    #{i} {clave}", file=sys.stderr)
+            for l in lineas_candidatos(clave, rs):
+                print(l, file=sys.stderr)
+            if clave in scouts:
+                print(f"      investigar y proponer uno: orq scout --token {args.token} --only {scouts[clave]}",
+                      file=sys.stderr)
+        print("    Resolvelo y volvé a lanzar con el mismo token:", file=sys.stderr)
+        print("      · usar uno existente   orq agent use <nombre> <arq>@<target>", file=sys.stderr)
+        print("      · crear uno nuevo      orq scout … → orq agent save <draft> <arq>@<target> --scope ?",
+              file=sys.stderr)
+        print(f"      · aceptar la genérica  --sin-specialist {','.join(str(i) for i, _ in faltan)}",
+              file=sys.stderr)
+        return 2
+    aceptadas = sorted(i for i in acepta if i <= total
+                       and t["propuesta"][i - 1].get("aceptado"))
+    if aceptadas != t.get("sin_specialist", []):
+        t["sin_specialist"] = aceptadas        # la aceptación queda en el token
+        tp.write_text(json.dumps(t, indent=2, ensure_ascii=False))
+    return 0
+
+
 def enlazar_agentes(cfg, wdir):
     """Un worktree nace SIN `.claude/`, y en modo --bg la resolución del agente NO
     ve el `--add-dir`: la sesión arranca con "no agent named ... — spawning with
@@ -801,6 +876,11 @@ def cmd_spawn(args):
             print(f"--only {args.only} no selecciona nada de la propuesta", file=sys.stderr)
             return 2
         print(f"  (--only {args.only}: {len(propuesta)} de {len(t['propuesta'])} sesiones)\n")
+
+    # Gate DD-6: sin specialist no se lanza nada salvo aceptación explícita por sesión.
+    rc_g = gate_specialists(args, t, propuesta, cfg, tp)
+    if rc_g:
+        return rc_g
 
     # Preguntas sin responder => no se levanta nada. El usuario define, no el script.
     pend = [p for p in propuesta if p.get("pregunta") and not (args.arbol or args.rama)]
@@ -1056,11 +1136,13 @@ echo LANZADO {jid}
         rc, out, err = remote(cfg, script, timeout=120)
         ok = "LANZADO" in out
         jobs[jid] = {"key": key, "ws": wsd["nombre"], "specialist": p["specialist"], "cwd": cwd,
+                     "sin_specialist": bool(p.get("aceptado")),
                      "padre": padre, "lanzado": time.time(), "ok": ok,
                      "modo": "visible" if args.visible else "headless",
                      "bgname": bgname}
         lanzados.append((jid, key, p["specialist"], ok))
-        print(f"  {'✅' if ok else '❌'} {key:<40} {p['specialist'] or 'general-purpose':<28} job={jid}")
+        etiqueta = p["specialist"] or "general-purpose (aceptado)"
+        print(f"  {'✅' if ok else '❌'} {key:<40} {etiqueta:<28} job={jid}")
 
     _save("sessions.json", sesiones)
     _save("jobs.json", jobs)
@@ -1895,6 +1977,8 @@ def main():
     s.add_argument("--arbol", help="rama_actual | otra:<nombre> | worktree")
     s.add_argument("--rama", help="worktree COMPARTIDO por repo con esta rama (lo reusa si existe)")
     s.add_argument("--base", help="base del worktree, ej gitlab/staging (hace fetch antes)")
+    s.add_argument("--sin-specialist", metavar="N[,M]",
+                   help="aceptar una sesión genérica (sin agente) para estas filas de la propuesta")
     s.add_argument("--visible", action="store_true",
                    help="sesiones con --bg: salen en `claude agents` de remota y se les puede attach")
     s.add_argument("--destruccion", choices=["nunca", "si_limpio", "tras_merge"],
