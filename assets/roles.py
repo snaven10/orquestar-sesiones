@@ -82,14 +82,16 @@ CFG = {
             "descripcion": "investiga el repo y propone un agente",
             # solo lectura y solo consulta: el scout NO escribe nada. El draft lo escribe orq
             # y el agente lo escribe `orq agent save` con el scope que elija el usuario.
-            "tools": ["Read", "Grep", "Glob", "Bash(git log*)", "Bash(ls*)", "Skill",
+            "tools": ["Read", "Grep", "Glob", "Bash(git log*)", "Bash(ls*)",
+                      # el CLAUDE.md global manda eza/fd/bat: sin esto se los niegan (scout real 2026-10-08)
+                      "Bash(eza*)", "Bash(fd*)", "Bash(bat*)", "Skill",
                       "mcp__devctx__search", "mcp__devctx__recall", "mcp__devctx__build_context",
                       "mcp__context7__resolve-library-id", "mcp__context7__query-docs"],
             "disallowed": ["Write", "Edit"],
             "persist": False,
             "modelo": "sonnet",
             "maquina": "local",                  # remota no tiene devctx
-            "costo": [0.15, 0.30],             # USD estimados: solo para mostrarlos en `need`
+            "costo": [0.25, 0.45],             # USD estimados (1er scout real: $0.36, 17 turnos)
             "timeout": 600,
         },
     },
