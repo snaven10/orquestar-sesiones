@@ -158,10 +158,12 @@ CFG = {
     # Dos worktrees perfectamente aislados igual se destruyen si tocan lo mismo.
     "recursos_exclusivos": {
         "gestor-docs": {
+            "solo_ws": ["mi-empresa"],
             "motivo": "parallelism=2 -> 8% de registros fallan con 500 (colisión de nombres)",
             "detectar": ["gestor-docs", "carga masiva", "subida de documentos"],
         },
         "base_qa": {
+            "solo_ws": ["mi-empresa"],
             "motivo": "acquisition timeout 5s; fallos de RED que se leen como bug de código",
             "detectar": ["migracion", "migración", "ddl", "seed", "oracle"],
         },
@@ -170,10 +172,12 @@ CFG = {
             "detectar": ["index_repo", "reindex", "devctx index", "indexar"],
         },
         "module_federation": {
+            "solo_ws": ["mi-empresa"],
             "motivo": "config asimétrica entre MFEs: merge + revert de emergencia a los 45 min",
             "detectar": ["webpack", "module federation", "module-federation", "remoteentry"],
         },
         "quarkus_live_reload": {
+            "solo_ws": ["mi-empresa"],
             "motivo": "editar Java con quarkus:dev sirviendo una medición MATA la corrida en curso "
                       "(live reload); PLAN-044 RUNBOOK §8.3 perdió 7 de 9 tandas. Invalida trabajo "
                       "YA HECHO, no lo demora",
@@ -181,6 +185,7 @@ CFG = {
                          "medicion en curso", "live reload"],
         },
         "etl_legacy": {
+            "solo_ws": ["mi-empresa"],
             "motivo": "no idempotente; deja colas en ERROR con intentos=3 que no se reintentan",
             "detectar": ["etl", "legacy", "anotaciones", "registros históricos"],
         },

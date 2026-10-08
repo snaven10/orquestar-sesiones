@@ -28,6 +28,11 @@ y habilita repos sueltos como `~/personal/claude-dashboard`.
   819-820 (`PLANS`, `AGENTS_DIR`); `RUIDO` (orq.py:164) es vocabulario MI-EMPRESA.
 - **orq.py no puede llamar MCPs** (devctx, context7): es Python plano. La parte "inteligente" de la
   propuesta la tiene que hacer la sesión Claude que usa la skill → DD-3.
+- **Hallazgo post TASK-005 (2026-10-08):** con solo workspaces declarados, un repo NO declarado
+  (probado desde `~/personal/modelofb`) caía EN SILENCIO a `mi-empresa` y el target se adivinaba por los
+  repos MI-EMPRESA sucios. Fix directo del orquestador: workspace implícito por repo git del cwd
+  (`~/.orq/workspaces.json`), `--ws` acepta ruta, worktree → repo principal, default solo con
+  aviso, y `solo_ws: ["mi-empresa"]` en los recursos exclusivos de MI-EMPRESA. Regresión MI-EMPRESA: diff vacío.
 
 ## 3. Tasks y orden
 | Task | Qué | Especialista | Depende de | Estado |

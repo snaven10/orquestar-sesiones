@@ -4,7 +4,7 @@
 El orquestador es la sesión que hace spawn. Este script es su herramienta.
 Nada se levanta sin un token emitido por `need` y aprobado por el usuario.
 """
-import argparse, json, os, re, secrets, shlex, subprocess, sys, time, uuid
+import argparse, hashlib, json, os, re, secrets, shlex, subprocess, sys, time, uuid
 from pathlib import Path
 
 HERE   = Path(__file__).resolve().parent
@@ -52,23 +52,76 @@ WS_NOMBRE = None
 
 
 def resolver_ws(nombre_flag, cfg):
-    """Qué workspace usa esta corrida: `--ws` -> el que contiene el cwd -> default.
+    """Qué workspace usa esta corrida: `--ws` -> el que contiene el cwd -> repo git del cwd
+    (workspace implícito) -> default CON AVISO.
 
     Con varios que contienen el cwd gana el de `path` más largo (el más específico).
+    Antes, un repo no declarado caía EN SILENCIO al default (mi-empresa) y el target se
+    adivinaba por los repos MI-EMPRESA sucios: una propuesta sobre el repo equivocado.
     """
     wss = cfg["workspaces"]
     nombre = nombre_flag or os.environ.get("ORQ_WS")
     if nombre:
-        if nombre not in wss:
-            sys.exit(f"workspace `{nombre}` no existe. Declarados: {', '.join(wss)}")
-        return nombre
+        if nombre in wss:
+            return nombre
+        raiz = _raiz_repo(Path(expand(nombre)))
+        if raiz:                                   # --ws acepta también una ruta a un repo
+            return _resolver_por_ruta(raiz, cfg)
+        sys.exit(f"workspace `{nombre}` no existe ni es un repo git. "
+                 f"Declarados: {', '.join(wss)}")
     cwd = Path.cwd().resolve()
+    n = _ws_que_contiene(cwd, wss)
+    if n:
+        return n
+    raiz = _raiz_repo(cwd)
+    if raiz:
+        return _resolver_por_ruta(raiz, cfg)
+    print(f"  ⚠ el cwd ({cwd}) no está en ningún workspace ni en un repo git → uso "
+          f"`{cfg['workspace_default']}` (default). Usá --ws <nombre|ruta> si no es ese.",
+          file=sys.stderr)
+    return cfg["workspace_default"]
+
+
+def _ws_que_contiene(ruta, wss):
     cands = []
     for n, w in wss.items():
         raiz = Path(expand(w["path"])).resolve()
-        if cwd == raiz or raiz in cwd.parents:
+        if ruta == raiz or raiz in ruta.parents:
             cands.append((len(str(raiz)), n))
-    return max(cands)[1] if cands else cfg["workspace_default"]
+    return max(cands)[1] if cands else None
+
+
+def _raiz_repo(ruta):
+    """Raíz del repo PRINCIPAL que contiene `ruta`. Un worktree (los de orq viven en
+    ~/.orq/trees/) se resuelve a su repo principal vía --git-common-dir: si no, cada
+    worktree se registraría como un workspace nuevo."""
+    if not ruta.is_dir():
+        return None
+    rc, out, _ = sh(["git", "-C", str(ruta), "rev-parse", "--path-format=absolute",
+                     "--git-common-dir"])
+    if rc != 0 or not out.strip():
+        return None
+    comun = Path(out.strip())
+    return (comun.parent if comun.name == ".git" else comun).resolve()
+
+
+def _resolver_por_ruta(raiz, cfg):
+    """Un repo dentro de un workspace declarado usa ese workspace; si no, se registra
+    como workspace implícito de tipo `repo` (sin add_dir, agentes en <repo>/.claude/agents)."""
+    wss = cfg["workspaces"]
+    n = _ws_que_contiene(raiz, wss)
+    if n:
+        return n
+    nombre = raiz.name
+    if nombre in wss:                     # mismo basename, otra ruta: desambiguar
+        nombre = f"{raiz.name}-{hashlib.sha1(str(raiz).encode()).hexdigest()[:4]}"
+    imp = _implicitos()
+    imp[nombre] = {"path": str(raiz), "tipo": "repo", "implicito": True}
+    _save("workspaces.json", imp)
+    wss[nombre] = imp[nombre]
+    print(f"  ➕ workspace implícito `{nombre}` (repo suelto: {raiz}). Para fijar "
+          f"add_dir/ruido/recursos, declaralo en roles.py.", file=sys.stderr)
+    return nombre
 
 
 def ws_actual(cfg):
@@ -122,7 +175,18 @@ def load_cfg():
     """Config como módulo Python: cero dependencias (este python no tiene pip ni yaml)."""
     sys.path.insert(0, str(HERE))
     import roles
-    return roles.CFG
+    cfg = roles.CFG
+    # Workspaces implícitos (repos sueltos detectados por cwd): viven en ~/.orq porque
+    # un token emitido desde ese repo tiene que poder resolverse después desde otro cwd.
+    # Nunca pisan uno declarado en roles.py.
+    for n, w in _implicitos().items():
+        cfg["workspaces"].setdefault(n, w)
+    return cfg
+
+
+def _implicitos():
+    p = STATE / "workspaces.json"
+    return json.loads(p.read_text()) if p.exists() else {}
 
 
 def expand(p):
@@ -225,6 +289,10 @@ def detectar_recursos(intent, cfg):
     """Recursos exclusivos que el trabajo va a tocar, por palabras clave."""
     hits, low = [], intent.lower()
     for nombre, r in (cfg.get("recursos_exclusivos") or {}).items():
+        # Un recurso de MI-EMPRESA (gestor-docs, base_qa…) no aplica en otro workspace: "legacy"
+        # o "seed" en un intent de otro repo no tocan esa base ni esa cola.
+        if r.get("solo_ws") and (WS_NOMBRE or cfg["workspace_default"]) not in r["solo_ws"]:
+            continue
         for pat in r.get("detectar", []):
             if pat.lower().strip("*").strip(".") in low:
                 hits.append((nombre, r["motivo"]))
@@ -632,8 +700,8 @@ def cmd_need(args):
             print(f"    · {f}")
             for l in lineas_candidatos(f, rs):
                 print(l)
-        print("\n  La skill debe PROPONER su estructura (devctx + memoria histórica +")
-        print("  context7 + claude-automation-recommender) y PREGUNTAR el scope:")
+        print("\n  Candidato del disco → confirmar con `orq agent use`. Sin candidatos → scout")
+        print("  (con aval). Al guardar, el scope SE PREGUNTA siempre, nunca hay default:")
         for l in texto_scopes(cfg):
             print(l)
     imprimir_scouts(scouts, tok)

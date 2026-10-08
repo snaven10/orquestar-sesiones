@@ -47,15 +47,23 @@ Quarkus; y PLAN-043 DD-7 serializa extracciones, así que el 2º slot es review/
 `.git`) y `repo` (un repo suelto; el target es el propio repo). Ejemplos hoy declarados:
 `mi-empresa` (multi, `~/mi-empresa`) y `claude-dashboard` (repo).
 
-Cómo se elige, en este orden: `orq --ws <nombre> ...` → `ORQ_WS` → el workspace cuyo `path`
-contiene el cwd (gana el más largo) → `workspace_default`. El token guarda el `ws`, así que
-`spawn` lo respeta aunque cambies de directorio entre `need` y `spawn`.
+Cómo se elige, en este orden: `orq --ws <nombre|ruta> ...` → `ORQ_WS` → el workspace
+declarado cuyo `path` contiene el cwd (gana el más largo) → **el repo git del cwd, como
+workspace implícito** → `workspace_default` **con aviso** en stderr. El token guarda el `ws`,
+así que `spawn` lo respeta aunque cambies de directorio entre `need` y `spawn`.
+
+**Cualquier repo funciona sin declararlo.** Un repo no declarado se registra solo como
+workspace `repo` en `~/.orq/workspaces.json` (avisa con `➕ workspace implícito`). Un
+worktree se resuelve a su repo principal. Declaralo en `roles.py` solo si necesita `add_dir`,
+`ruido` o recursos propios. Los recursos exclusivos de MI-EMPRESA llevan `solo_ws: ["mi-empresa"]`:
+un "legacy" o "seed" en otro repo no bloquea la cola ni la base de MI-EMPRESA.
 `--add-dir` solo se pasa si el workspace declara `add_dir` (hoy `mi-empresa`); en un `repo`
 el agente de proyecto resuelve por cwd y no hace falta.
 
 ```bash
 orq need "<lo que se va a trabajar>"                    # ws por cwd / default
 orq --ws claude-dashboard need "<lo que se va a trabajar>"
+orq --ws ~/personal/otro-repo need "<lo que se va a trabajar>"   # ruta: se registra sola
 ```
 
 ### 2. Presentarla COMPLETA al usuario
