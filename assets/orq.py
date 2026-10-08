@@ -1201,7 +1201,9 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
             flags += ["--resume", sid_previo]
         else:
             sid = str(uuid.uuid4())
-            flags += ["--session-id", sid, "--name", f"orq-{key}"]
+            flags += ["--session-id", sid]
+            if not args.visible:      # en --bg el nombre ya va con el jid: un 2º --name lo pisa
+                flags += ["--name", f"orq-{key}"]
             if a["persist"]:
                 sesiones[key] = sid
 
@@ -1268,7 +1270,9 @@ echo LANZADO {jid}
                      "sin_specialist": bool(p.get("aceptado")),
                      "padre": padre, "lanzado": time.time(), "ok": ok,
                      "modo": "visible" if args.visible else "headless",
-                     "bgname": bgname}
+                     # sin host no hay forma de saber después dónde corrió un job (los 25
+                     # --visible de MI-EMPRESA: ¿local o remota? no se pudo reconstruir)
+                     "host": HOST, "bgname": bgname}
         lanzados.append((jid, key, p["specialist"], ok))
         etiqueta = p["specialist"] or "general-purpose (aceptado)"
         print(f"  {'✅' if ok else '❌'} {key:<40} {etiqueta:<28} job={jid}")
@@ -1299,7 +1303,7 @@ def cmd_status(args):
     rc, out, _ = remote(cfg, f"""
     for j in {ids}; do
       d=~/.orq/jobs/$j
-      if [ -f $d/rc ]; then echo "$j FIN $(cat $d/rc)"
+      if [ -f $d/rc ]; then echo "$j FIN $(cat $d/rc) $(cat $d/bgid 2>/dev/null)"
       elif [ -d $d ];  then echo "$j CORRIENDO -"
       else echo "$j PERDIDO -"; fi
     done""")
@@ -1308,17 +1312,29 @@ def cmd_status(args):
         _, aj, _ = remote(cfg, f"{maq(cfg)['claude']} agents --json --all 2>/dev/null")
         try:
             for a in json.loads(aj):
-                vis[a.get("name") or ""] = (a.get("id"), a.get("state"))
+                # Por ID, no por nombre: spawn pasa `--name` dos veces y gana el último,
+                # así que `bgname` nunca coincidía y toda sesión visible salía como FIN
+                # aunque siguiera trabajando (lote 1 de claude-dashboard, 2026-10-08).
+                v = (a.get("id"), a.get("state") or a.get("status"))
+                vis[a.get("id") or ""] = v
+                vis[a.get("name") or ""] = v
         except Exception:
             pass
 
     print(f"\n  {'JOB':<10}{'WS':<18}{'SESIÓN':<40}{'SPECIALIST':<28}{'ESTADO'}")
     for line in out.splitlines():
-        j, st, code = (line.split() + ["", ""])[:3]
+        j, st, code, bgid = (line.split() + ["", "", ""])[:4]
         m = jobs.get(j, {})
         extra = f" (rc={code})" if st == "FIN" and code not in ("0", "-") else ""
-        if m.get("modo") == "visible" and m.get("bgname") in vis:
-            bid, bst = vis[m["bgname"]]
+        # el fallback por nombre es solo para jobs viejos sin bgid; uno que nunca arrancó
+        # NO se empareja (el nombre lo puede tener otra sesión viva)
+        clave_vis = bgid if bgid in vis else (m.get("bgname") if m.get("ok") else None)
+        if m.get("ok") is False:
+            st, extra = "FALLÓ AL LANZAR", f"   (ver ~/.orq/jobs/{j}/err.log)"
+        elif m.get("host", HOST) != HOST:
+            st, extra = f"en {m['host']}", f"   (orq --host {m['host']} status)"
+        elif m.get("modo") == "visible" and clave_vis in vis:
+            bid, bst = vis[clave_vis]
             # `attach` a una sesión TERMINADA la revive y, al salir, te deja una sesión
             # nueva en el cwd del login (~), que además pide confiar en esa carpeta.
             # Para las terminadas se usa `logs`, que no revive nada. Y el `cd` va
