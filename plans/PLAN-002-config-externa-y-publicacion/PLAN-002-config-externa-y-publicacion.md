@@ -1,7 +1,7 @@
 # PLAN-002 — Config del usuario fuera del código + publicación en GitHub
 
 **Fecha:** 2026-10-09
-**Fase:** 2 (Ejecución) — aprobado 2026-10-09
+**Fase:** Cerrado
 **Fase anterior:** [PLAN-001](../PLAN-001-multi-workspace-y-agentes/PLAN-001-multi-workspace-y-agentes.md)
 **Proyectos:** orquestar-sesiones (`~/.claude/skills/orquestar-sesiones`)
 **Origen:** pedido del usuario — publicar orq como repo público (MIT) para aportes de la comunidad
@@ -60,7 +60,7 @@ ejemplo genérico, y después reescribe el historial y publica.
 | **TASK-009** | Loader de dos capas + `config.example.toml` + migrar la config del usuario a `~/.orq/config.toml` | general-purpose | sonnet | TASK-008 | `done` |
 | **TASK-010** | Texto genérico en `orq.py`, `SKILL.md`, `references/`, planes; `README.md` + `LICENSE` MIT | general-purpose | sonnet | TASK-009 | `done` |
 | **TASK-011** | Verificación: regresión idéntica + HOME vacío funciona + árbol sin menciones | orquestador | — | TASK-010 | `done` |
-| **TASK-012** | Reescribir historial y publicar (gate del usuario antes del push) | orquestador | — | TASK-011 + PLAN-009 del dashboard | `pending` |
+| **TASK-012** | Reescribir historial y publicar (gate del usuario antes del push) | orquestador | — | TASK-011 + PLAN-009 del dashboard | `done` |
 
 Todo secuencial: cada task pisa los mismos archivos que la anterior.
 
@@ -72,4 +72,9 @@ Todo secuencial: cada task pisa los mismos archivos que la anterior.
 - Migrar `~/.orq/*.json` existentes: su formato no cambia.
 
 ## 6. Cierre
-<!-- SE LLENA AL CERRAR EL PLAN -->
+- **Cerrado:** 2026-10-09
+- **Shipeó:** config del usuario en `~/.orq/config.toml` (TASK-009/010, merge en `main`) y https://github.com/snaven10/orquestar-sesiones (público, MIT).
+- **Verificación:** sin regresión con la config del usuario (capturas idénticas salvo `--help`; config efectiva igual a la del `roles.py` viejo), funciona sin config, 0 restos en todo el historial (TASK-011, TASK-012).
+- **NO verificado:** el hint de attach y el de `scp` con un job real en otra máquina.
+- **Quedó afuera:** empaquetado, README en inglés (§5).
+- **Continúa en:** —

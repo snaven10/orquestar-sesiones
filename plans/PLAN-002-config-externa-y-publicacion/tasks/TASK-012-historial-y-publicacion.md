@@ -4,7 +4,7 @@
 - **Especialista:** orquestador
 - **Proyecto:** orquestar-sesiones (`~/.claude/skills/orquestar-sesiones`)
 - **Depende de:** TASK-011 y PLAN-009 TASK-021 del dashboard (misma lista de reemplazos)
-- **Estado:** `pending`
+- **Estado:** `done`
 
 ---
 
@@ -38,7 +38,9 @@ del usuario (DD-5).
 
 ## Resultado
 <!-- SE LLENA AL CERRAR (estado done/skipped). Vacío mientras esté pending. -->
-- **Estado final:**
-- **Resumen:**
-- **Archivos tocados:**
-- **Verificado por:**
+- **Estado final:** `done`
+- **Resumen:** historial reescrito con `git-filter-repo` 2.47.0 (misma lista que el dashboard), README nuevo, publicado en https://github.com/snaven10/orquestar-sesiones. El repo local usa la credencial personal (`credential.helper` local) porque vive fuera de `~/personal/`.
+- **Archivos tocados:** todo el historial (30 commits reescritos); `README.md`.
+- **Verificado por:** `git log --all -p` (código, diffs, mensajes, autor) del repo reescrito contra la lista privada de identificadores: 0 coincidencias en los dos repos. Árbol final comparado contra el original: solo cambian textos de docs (máquinas y ramas de ejemplo). Tests en el repo reescrito (dashboard: Go en verde, node 53/53; orq: `py_compile`). Objetos viejos eliminados del repo local (`reflog expire` + `gc --prune=now`; un SHA viejo ya no resuelve). Repos creados por la API de GitHub con la credencial personal, públicos, licencia MIT detectada, topics cargados, imagen del README servida (HTTP 200).
+- **Desviaciones:** la primera pasada de reemplazos cambiaba la palabra común "partida(s)" y rompía comentarios legítimos; se acotó a las frases del dominio y se rehízo. README creativo nuevo pedido por el usuario al publicar.
+- **Riesgos abiertos / siguiente:** los SHAs citados en `plans/` son de antes de la publicación (nota en el README). Respaldos completos pre-publicación en `~/respaldos/` (locales, nunca se suben).
