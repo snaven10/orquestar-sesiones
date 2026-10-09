@@ -23,6 +23,9 @@ tiene_devctx = true            # ¿hay devctx acá? (los aprendizajes se guardan
 
 [maquinas.servidor]            # ejemplo de máquina remota por SSH
 ssh = ["ssh", "-o", "BatchMode=yes", "servidor"]
+# Opcional: comando SSH para el attach INTERACTIVO que `orq status` sugiere (lista o string).
+# Útil si necesitás otro alias, p.ej. uno sin RemoteForward. Sin esta clave se usa `ssh`.
+ssh_attach = "ssh servidor-tty"
 claude = "~/.local/bin/claude" # a veces no está en el PATH no-interactivo
 concurrencia = 4
 tiene_devctx = false           # sin devctx: los aprendizajes vuelven por `orq harvest`

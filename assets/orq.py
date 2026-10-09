@@ -25,6 +25,14 @@ def maq(cfg):
     return cfg["maquinas"][HOST]
 
 
+def _ssh_attach(cfg):
+    """Comando SSH para el attach interactivo: `ssh_attach` de la máquina (lista o string),
+    o su `ssh` unido."""
+    m = maq(cfg)
+    a = m.get("ssh_attach") or m["ssh"]
+    return a if isinstance(a, str) else " ".join(a)
+
+
 def es_local(cfg):
     return not maq(cfg)["ssh"]
 
@@ -93,8 +101,8 @@ def resolver_ws(nombre_flag, cfg):
     (workspace implícito) -> default CON AVISO.
 
     Con varios que contienen el cwd gana el de `path` más largo (el más específico).
-    Antes, un repo no declarado caía EN SILENCIO al default (mi-empresa) y el target se
-    adivinaba por los repos MI-EMPRESA sucios: una propuesta sobre el repo equivocado.
+    Antes, un repo no declarado caía EN SILENCIO al workspace default y el target se
+    adivinaba por los repos sucios de ese workspace: una propuesta sobre el repo equivocado.
     """
     wss = cfg["workspaces"]
     nombre = nombre_flag or os.environ.get("ORQ_WS")
@@ -169,7 +177,7 @@ def ws_actual(cfg):
     nombre = WS_NOMBRE or cfg.get("workspace_default")
     w = dict(cfg["workspaces"][nombre])
     w["nombre"] = nombre
-    w.setdefault("add_dir", None)           # solo MI-EMPRESA lo necesita (monorepo sin .git)
+    w.setdefault("add_dir", None)           # solo lo necesita un `multi` cuya raíz no es repo git
     w.setdefault("agents", f"{w['path']}/.claude/agents")
     w.setdefault("plans", f"{w['path']}/plans")
     # Dónde vive el worktree NO cambia el trust: Claude Code lo resuelve en la raíz del repo
@@ -187,7 +195,7 @@ def ws_ruta_target(cfg, target):
 
 
 def clave_ws(cfg, clave):
-    """Clave de estado de una sesión. Prefijada por ws salvo en MI-EMPRESA: `worker@X` de
+    """Clave de estado de una sesión. Prefijada por ws salvo en los workspaces con `claves_sin_prefijo`: `worker@X` de
     sessions.json existe desde antes de los workspaces y migrarla rompería los resume."""
     w = ws_actual(cfg)
     return clave if w.get("claves_sin_prefijo") else f"{w['nombre']}:{clave}"
@@ -282,7 +290,7 @@ def rpath(cfg, p):
     """Expande `~` contra el HOME REMOTO.
 
     shlex.quote('~/x') produce '~/x' literal y bash NO expande el tilde dentro de
-    comillas: `[ -e '~/mi-empresa/...'/.git ]` siempre falla. Hay que resolver a ruta
+    comillas: `[ -e '~/proyectos/x'/.git ]` siempre falla. Hay que resolver a ruta
     absoluta ANTES de citar.
     """
     p = str(p)
@@ -304,7 +312,7 @@ def sh(cmd, cwd=None, stdin=None, timeout=120):
 
 
 def remote(cfg, script, stdin=None, timeout=300):
-    """Corre un script bash en la máquina activa: por SSH en remota, `bash -s` local en local."""
+    """Corre un script bash en la máquina activa: por SSH en una máquina remota, `bash -s` local si no hay `ssh`."""
     ssh = maq(cfg)["ssh"]
     payload = script if stdin is None else script
     r = subprocess.run(ssh + ["bash", "-s"], input=payload,
@@ -372,7 +380,7 @@ def detectar_recursos(intent, cfg):
     """Recursos exclusivos que el trabajo va a tocar, por palabras clave."""
     hits, low = [], intent.lower()
     for nombre, r in (cfg.get("recursos_exclusivos") or {}).items():
-        # Un recurso de MI-EMPRESA (gestor-docs, base_qa…) no aplica en otro workspace: "legacy"
+        # Un recurso de un workspace (p.ej. una base de QA compartida) no aplica en otro workspace: "legacy"
         # o "seed" en un intent de otro repo no tocan esa base ni esa cola.
         if r.get("solo_ws") and (WS_NOMBRE or cfg.get("workspace_default")) not in r["solo_ws"]:
             continue
@@ -634,13 +642,13 @@ def scouts_de(faltantes, cfg, nombre=None):
     return out
 
 
-def imprimir_scouts(scouts, tok):
+def imprimir_scouts(scouts, tok, maquina):
     if not scouts:
         return
     print("\n  🔎 SCOUTS PROPUESTOS (investigan el repo y dejan un BORRADOR; no guardan nada):")
     for i, s_ in enumerate(scouts, 1):
         c = s_["costo"]
-        print(f"    S{i} {s_['clave']:<40} ~${c[0]:.2f}–{c[1]:.2f}  local · sonnet · solo lectura"
+        print(f"    S{i} {s_['clave']:<40} ~${c[0]:.2f}–{c[1]:.2f}  {maquina} · sonnet · solo lectura"
               + (f"  → name: {s_['nombre']}" if s_.get("nombre") else ""))
     print(f"    cuesta plata: necesita aval →  orq scout --token {tok} --only N")
 
@@ -793,7 +801,7 @@ def cmd_need(args):
         print("  (con aval). Al guardar, el scope SE PREGUNTA siempre, nunca hay default:")
         for l in texto_scopes(cfg):
             print(l)
-    imprimir_scouts(scouts, tok)
+    imprimir_scouts(scouts, tok, cfg["arquetipos"]["scout"]["maquina"])
 
     conc = maq(cfg)["concurrencia"]
     print(f"\n  Concurrencia máx {HOST}: {conc}"
@@ -882,7 +890,7 @@ def need_de_plan(args, cfg):
                 print(l)
             scouts += scouts_de([(f"worker@{faltan_t[n]}", rs)], cfg, nombre=n)
         scouts = [x for k, x in enumerate(scouts) if x["clave"] not in {y["clave"] for y in scouts[:k]}]
-        imprimir_scouts(scouts, tok)
+        imprimir_scouts(scouts, tok, cfg["arquetipos"]["scout"]["maquina"])
     for r, n in por_repo.items():
         if n > 1:
             print(f"\n  ⚠ {n} sesiones sobre {r}. Si comparten árbol pueden tragarse")
@@ -1068,14 +1076,14 @@ def cmd_spawn(args):
             print(f"  ❌ El PLAN no existe en {HOST}: {pd}", file=sys.stderr)
             print(f"     Las sesiones corren ALLÁ y no lo encontrarían. Sincronizalo:", file=sys.stderr)
             print(f"     scp -r -o ClearAllForwardings=yes "
-                  f"{wsd['plans']}/{t['plan_dir']} remota:{wsd['plans'].removeprefix('~/')}/", file=sys.stderr)
+                  f"{wsd['plans']}/{t['plan_dir']} {HOST}:{wsd['plans'].removeprefix('~/')}/", file=sys.stderr)
             return 2
         print(f"  ✓ PLAN presente en {HOST} ({out_p.strip()} tasks)")
 
     wts = _load("worktrees.json", {})
 
     # Trust ANTES de crear worktrees: si no, quedan ramas y worktrees huérfanos de sesiones
-    # que nunca arrancaron. Solo se puede leer en local (~/.claude.json local).
+    # que nunca arrancaron. Solo se puede leer en la máquina local (~/.claude.json).
     if args.visible and es_local(cfg):
         dirs = {ws_ruta_target(cfg, p_["target"]) for p_ in propuesta}
         sin_trust = [d for d in dirs if not confiado(d)]
@@ -1120,14 +1128,14 @@ def cmd_spawn(args):
 
         # --rama: UN worktree por repo, compartido por todas las sesiones de ese repo,
         # con rama fija y base explícita. Es el modelo de los PLAN que declaran sus propias
-        # ramas (p.ej. PLAN-040 TASK-008: "uno por repo, desde gitlab/staging").
+        # ramas (p.ej. "uno por repo, desde origin/staging").
         if args.rama and p["modo"] != "auditar_sin_commitear":
             base = args.base or p.get("branch") or "HEAD"
             wdir = (f"{rpath(cfg, wsd['worktrees_en'])}/{tgt}/"
                     f"{re.sub(r'[^A-Za-z0-9._-]+', '-', args.rama)}")
             W, P, R, B = map(shlex.quote, (wdir, principal, args.rama, base))
-            # la ref remota local puede estar VIEJA (remota tenía gitlab/staging=f5b7ba8f
-            # con el remoto real en 08e95e9d): fetch SIEMPRE antes de ramificar.
+            # la ref remota local puede estar VIEJA (una máquina remota tenía origin/staging
+            # en un SHA viejo, con el remoto real más adelante): fetch SIEMPRE antes de ramificar.
             fetch = ""
             if "/" in base and not re.fullmatch(r"[0-9a-f]{7,40}", base):
                 rem, br = base.split("/", 1)
@@ -1214,7 +1222,7 @@ git -C {W} merge-base --is-ancestor {B} HEAD 2>/dev/null && echo "ANCESTRO=ok" |
                       f"(WIP ajeno). Usá --arbol worktree o --rama. No se lanza.")
                 continue
 
-        # headless (-p): resultado JSON parseable, pero INVISIBLE en remota.
+        # headless (-p): resultado JSON parseable, pero INVISIBLE en una máquina remota.
         # visible (--bg): sale en `claude agents`, se puede `attach`/`logs`/`stop`,
         # pero no hay out.json — harvest tiene que leer los logs.
         # En --bg el prompt posicional se IGNORA: va por redirección de stdin.
@@ -1326,8 +1334,8 @@ echo LANZADO {jid}
                      "sin_specialist": bool(p.get("aceptado")),
                      "padre": padre, "lanzado": time.time(), "ok": ok,
                      "modo": "visible" if args.visible else "headless",
-                     # sin host no hay forma de saber después dónde corrió un job (los 25
-                     # --visible de MI-EMPRESA: ¿local o remota? no se pudo reconstruir)
+                     # sin host no hay forma de saber después dónde corrió un job (25 jobs
+                     # --visible: ¿local o remoto? no se pudo reconstruir)
                      "host": HOST, "bgname": bgname}
         lanzados.append((jid, key, p["specialist"], ok))
         etiqueta = p["specialist"] or "general-purpose (aceptado)"
@@ -1397,19 +1405,23 @@ def cmd_status(args):
         elif "host" not in m and st == "PERDIDO":
             # jobs anteriores al registro de host (3ff9db1): sin rastro acá, casi
             # seguro corrieron en la otra máquina. No se inventa un estado.
-            st, extra = "SIN RASTRO", "   (job viejo sin host registrado, casi seguro de remota → orq --host remota status)"
+            otras = [n for n, m_ in cfg["maquinas"].items() if n != HOST and m_.get("ssh")]
+            otra = otras[0] if len(otras) == 1 else "<máquina>"
+            quien = f"de {otra}" if len(otras) == 1 else "de otra máquina"
+            st, extra = "SIN RASTRO", f"   (job viejo sin host registrado, casi seguro {quien} → orq --host {otra} status)"
         elif m.get("modo") == "visible" and clave_vis in vis:
             bid, bst = vis[clave_vis]
             # `attach` a una sesión TERMINADA la revive y, al salir, te deja una sesión
             # nueva en el cwd del login (~), que además pide confiar en esa carpeta.
             # Para las terminadas se usa `logs`, que no revive nada. Y el `cd` va
             # siempre: si igual cae en ese fallback, aterriza en el repo, no en ~.
-            # Alias remota-tty = sin RemoteForward (el `remota` muere si el 2223 está tomado).
+            # Para el attach interactivo, `ssh_attach` de la máquina (p.ej. un alias SSH sin
+            # RemoteForward); sin él se usa su `ssh`.
             viva = bst in ("working", "blocked", "awaiting_input")
             acc = (f"claude attach {bid}" if viva else f"claude logs {bid}")
             dentro = f"cd {m.get('cwd','~')} && ~/.local/bin/{acc}"
             st, extra = bst, (f"   {dentro}" if es_local(cfg)
-                              else f"   ssh remota-tty '{dentro}'")
+                              else f"   {_ssh_attach(cfg)} '{dentro}'")
         print(f"  {j:<10}{corta(m.get('ws', cfg.get('workspace_default') or WS_NOMBRE),16):<18}"
               f"{corta(m.get('key',''),38):<40}"
               f"{corta(m.get('specialist') or '-',26):<28}{st}{extra}")
@@ -1490,7 +1502,7 @@ MODELOS_VALIDOS = ("sonnet", "opus", "haiku", "fable")
 
 
 def repo_local(cfg, target):
-    """Ruta LOCAL (local) del repo de un target: el scout siempre corre en local (tiene devctx)."""
+    """Ruta LOCAL del repo de un target: el scout corre en la máquina del arquetipo (con devctx)."""
     w = ws_actual(cfg)
     base = Path(expand(w["path"]))
     return base if w["tipo"] == "repo" else base / target
@@ -1810,7 +1822,7 @@ def cmd_agent_save(args):
 # ───────────────────────────── harvest ─────────────────────────────
 
 def ws_plans(cfg):
-    """Dir de PLANs del workspace activo (se leen LOCAL: harvest/plan corren en local)."""
+    """Dir de PLANs del workspace activo (se leen LOCAL: harvest/plan corren en la máquina local)."""
     return Path(expand(ws_actual(cfg)["plans"]))
 
 
@@ -1821,7 +1833,7 @@ def ws_agents(cfg):
 
 # 25+ variantes reales -> 5. Se normaliza, nunca se confía en el string crudo.
 def primer_valor(v):
-    """El campo trae prosa pegada: '✅ **`done`** — ejecutada en REMOTA contra...'.
+    """El campo trae prosa pegada: '✅ **`done`** — ejecutada en otra máquina contra...'.
     Nos quedamos con el primer token entre backticks; si no hay, la primera palabra."""
     v = (v or "").split("—")[0].split(" - ")[0]
     m = re.search(r"`([^`]+)`", v)
@@ -1879,8 +1891,8 @@ def primer_nombre(v):
 
 
 def repo_y_rama(proyecto):
-    """`api-backend (`/ruta/`), rama `feature/x` (worktree desde `gitlab/staging`)`
-    → ('api-backend', 'feature/x', 'gitlab/staging'). El repo es la primera palabra
+    """`api-backend (`/ruta/`), rama `feature/x` (worktree desde `origin/staging`)`
+    → ('api-backend', 'feature/x', 'origin/staging'). El repo es la primera palabra
     DESNUDA, no el primer backtick (ese es la ruta absoluta)."""
     txt = re.sub(r"\*\*", "", proyecto or "")
     repo = (re.match(r"\s*`?([A-Za-z][\w.-]+)`?", txt) or ["", ""])[1]
@@ -2099,7 +2111,7 @@ def cmd_harvest(args):
 
     El hook nativo de SessionEnd solo escribe un marcador vacío (sin `agents`),
     y encima solo si el archivo no existe — por eso lleva meses estancado.
-    remota no tiene devctx: esta es la ÚNICA vía de vuelta de los aprendizajes.
+    Una máquina remota sin devctx: esta es la ÚNICA vía de vuelta de los aprendizajes.
     """
     cfg = load_cfg()
     jobs = _load("jobs.json", {})
@@ -2267,7 +2279,7 @@ def main():
     s.add_argument("--sin-specialist", metavar="N[,M]",
                    help="aceptar una sesión genérica (sin agente) para estas filas de la propuesta")
     s.add_argument("--visible", action="store_true",
-                   help="sesiones con --bg: salen en `claude agents` de remota y se les puede attach")
+                   help="sesiones con --bg: salen en `claude agents` de la máquina y se les puede attach")
     s.add_argument("--destruccion", choices=["nunca", "si_limpio", "tras_merge"],
                    help="política de destrucción de los worktrees que se creen")
     s.set_defaults(fn=cmd_spawn)
