@@ -3,11 +3,11 @@
 ## DD-1 — Workspaces declarados en `roles.py`
 ```python
 "workspaces": {
-    "mi-empresa":            {"path": "~/mi-empresa", "tipo": "multi",
-                         "add_dir": "~/mi-empresa",                 # el trap verificado sigue vigente
-                         "agents": "~/mi-empresa/.claude/agents", "plans": "~/mi-empresa/plans",
-                         "ruido": ["mi-empresa","srv","backend",...]},
-    "claude-dashboard": {"path": "~/personal/claude-dashboard", "tipo": "repo"},
+    "mi-empresa":            {"path": "~/proyectos/mi-empresa", "tipo": "multi",
+                         "add_dir": "~/proyectos/mi-empresa",                 # el trap verificado sigue vigente
+                         "agents": "~/proyectos/mi-empresa/.claude/agents", "plans": "~/proyectos/mi-empresa/plans",
+                         "ruido": ["mi-empresa","api","backend",...]},
+    "herramienta": {"path": "~/personal/herramienta", "tipo": "repo"},
 },
 "workspace_default": "mi-empresa",
 ```
@@ -50,7 +50,7 @@
                     "mcp__devctx__search","mcp__devctx__recall","mcp__devctx__build_context",
                     "mcp__context7__resolve-library-id","mcp__context7__query-docs"],
           "disallowed": ["Write","Edit"], "persist": False, "modelo": "sonnet",
-          "maquina": "local"}   # remota no tiene devctx
+          "maquina": "local"}   # una máquina remota no tiene devctx
 ```
 - `orq scout <arq>@<target> [--ws]` → **pide token como spawn** (regla de oro): `need` lo propone
   con costo estimado; `orq scout --token T-…` lo ejecuta.

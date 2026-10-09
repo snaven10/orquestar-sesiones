@@ -16,7 +16,7 @@ orq se comporta igual que antes (DD-1, DD-2, DD-3).
 ## Contexto verificado
 - `load_cfg()` en `assets/orq.py` importa `roles.CFG` y le suma `_implicitos()`
   (`~/.orq/workspaces.json`).
-- `HOST = os.environ.get("ORQ_HOST", "local")` (`orq.py:19`); `maq(cfg)` indexa `cfg["maquinas"][HOST]`.
+- `HOST = os.environ.get("ORQ_HOST", "<nombre de una máquina del autor>")` (`orq.py:19`); `maq(cfg)` indexa `cfg["maquinas"][HOST]`.
 - `ws_actual(cfg)` usa `WS_NOMBRE or cfg["workspace_default"]`.
 - `_resolver_por_ruta` imprime "declaralo en roles.py" para workspaces implícitos.
 - Claves del usuario hoy en `roles.py`: `maquinas`, `workspaces`, `workspace_default`,
@@ -51,7 +51,7 @@ orq se comporta igual que antes (DD-1, DD-2, DD-3).
   "declaralo en ~/.orq/config.toml".
 
 ## Criterios de aceptación
-- [ ] `git grep -n -i -E 'mi-empresa|org|remota|_backend|-srv' assets/roles.py assets/config.example.toml` vacío.
+- [ ] `git grep -n -i` con la lista privada de identificadores del cliente sobre `assets/roles.py` y `assets/config.example.toml` vacío.
 - [ ] `python3 -m py_compile assets/orq.py assets/roles.py` OK.
 - [ ] Con `~/.orq/config.toml`: las capturas de TASK-008 repetidas dan igual (eso lo cierra TASK-011,
   pero el worker lo corre antes de entregar y reporta el diff).

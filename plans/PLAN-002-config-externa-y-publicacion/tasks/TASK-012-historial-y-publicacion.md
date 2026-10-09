@@ -21,7 +21,7 @@ del usuario (DD-5).
 - [ ] **Paso 1 — respaldo.** `git clone --mirror` a `~/respaldos/orquestar-sesiones-pre-publicacion.git`.
 - [ ] **Paso 2 — herramienta.** Bajar `git-filter-repo` de una release fijada al scratchpad.
 - [ ] **Paso 3 — reemplazos.** `reemplazos.txt` compartido con el dashboard (nombres del cliente,
-  repos, planes, `remota`, IP, rutas `/home/usuario`). En un clone fresco:
+  repos, planes, máquinas, IP, rutas del HOME). En un clone fresco:
   `filter-repo --replace-text reemplazos.txt --replace-message reemplazos.txt` (+ `--mailmap` si aplica).
 - [ ] **Paso 4 — verificación.** `git log --all -p | rg -i <patrón completo>` vacío;
   `git log --all --format='%an %ae %cn %ce'` según lo decidido; `py_compile` en el HEAD.
