@@ -4,7 +4,7 @@
 El orquestador es la sesión que hace spawn. Este script es su herramienta.
 Nada se levanta sin un token emitido por `need` y aprobado por el usuario.
 """
-import argparse, hashlib, json, os, re, secrets, shlex, subprocess, sys, time, uuid
+import argparse, copy, hashlib, json, os, re, secrets, shlex, shutil, subprocess, sys, time, tomllib, uuid
 from pathlib import Path
 
 HERE   = Path(__file__).resolve().parent
@@ -15,8 +15,9 @@ TOKEN_TTL = 600  # 10 min
 
 # ───────────────────────────── config ─────────────────────────────
 
-# Host de ejecución: local (local, default) o remota (SSH). `--host` o ORQ_HOST.
-HOST = os.environ.get("ORQ_HOST", "local")
+# Host de ejecución. `--host` > ORQ_HOST > `maquina_default` de la config > "local".
+# Se resuelve en load_cfg() (necesita la config); hasta entonces vale lo que pidió el usuario.
+HOST = os.environ.get("ORQ_HOST") or None
 
 
 def maq(cfg):
@@ -66,7 +67,7 @@ def excluir_trees(cfg, principal, wdir):
 
 def bin_claude(cfg, host=None):
     """Binario de claude de la máquina. `ORQ_CLAUDE` lo reemplaza: es el gancho para probar
-    spawn/scout con un claude FALSO sin tocar roles.py y sin arriesgar una sesión real."""
+    spawn/scout con un claude FALSO sin tocar la config y sin arriesgar una sesión real."""
     return os.environ.get("ORQ_CLAUDE") or cfg["maquinas"][host or HOST]["claude"]
 
 
@@ -112,6 +113,9 @@ def resolver_ws(nombre_flag, cfg):
     raiz = _raiz_repo(cwd)
     if raiz:
         return _resolver_por_ruta(raiz, cfg)
+    if not cfg.get("workspace_default"):
+        _die(f"el cwd ({cwd}) no está en ningún workspace ni en un repo git, y no hay "
+                 f"`workspace_default` en la config. Usá --ws <nombre|ruta> o corré desde un repo git.")
     print(f"  ⚠ el cwd ({cwd}) no está en ningún workspace ni en un repo git → uso "
           f"`{cfg['workspace_default']}` (default). Usá --ws <nombre|ruta> si no es ese.",
           file=sys.stderr)
@@ -156,13 +160,13 @@ def _resolver_por_ruta(raiz, cfg):
     _save("workspaces.json", imp)
     wss[nombre] = imp[nombre]
     print(f"  ➕ workspace implícito `{nombre}` (repo suelto: {raiz}). Para fijar "
-          f"add_dir/ruido/recursos, declaralo en roles.py.", file=sys.stderr)
+          f"add_dir/ruido/recursos, declaralo en ~/.orq/config.toml.", file=sys.stderr)
     return nombre
 
 
 def ws_actual(cfg):
     """Config normalizada del workspace activo, con las rutas ya derivadas del `path`."""
-    nombre = WS_NOMBRE or cfg["workspace_default"]
+    nombre = WS_NOMBRE or cfg.get("workspace_default")
     w = dict(cfg["workspaces"][nombre])
     w["nombre"] = nombre
     w.setdefault("add_dir", None)           # solo MI-EMPRESA lo necesita (monorepo sin .git)
@@ -209,16 +213,57 @@ def sesion_claude_ancestro():
     return None
 
 
+def _die(msg):
+    """Error de config/uso: mensaje a stderr y rc 2, sin traceback."""
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def _fusionar(base, extra):
+    """Merge profundo: dict pisa dict por clave (recursivo); lista y escalar reemplazan."""
+    for k, v in extra.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _fusionar(base[k], v)
+        else:
+            base[k] = copy.deepcopy(v)
+    return base
+
+
+def _config_usuario():
+    """Config del usuario (TOML): `ORQ_CONFIG` (ruta explícita, debe existir) o
+    ~/.orq/config.toml si existe. Devuelve {} si no hay. Error legible y rc 2, sin traceback."""
+    env = os.environ.get("ORQ_CONFIG")
+    p = Path(expand(env)) if env else STATE / "config.toml"
+    if not p.is_file():
+        if env:
+            _die(f"ORQ_CONFIG apunta a un archivo que no existe: {p}")
+        return {}
+    try:
+        with open(p, "rb") as f:
+            return tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        _die(f"config inválida (TOML) en {p}: {e}")
+    except (OSError, UnicodeDecodeError) as e:
+        _die(f"no se pudo leer la config {p}: {e}")
+
+
 def load_cfg():
-    """Config como módulo Python: cero dependencias (este python no tiene pip ni yaml)."""
+    """Config en dos capas: defaults genéricos (roles.py) + config del usuario (TOML).
+    Cero dependencias: `tomllib` es stdlib."""
+    global HOST
     sys.path.insert(0, str(HERE))
     import roles
-    cfg = roles.CFG
+    cfg = _fusionar(copy.deepcopy(roles.CFG), _config_usuario())
     # Workspaces implícitos (repos sueltos detectados por cwd): viven en ~/.orq porque
     # un token emitido desde ese repo tiene que poder resolverse después desde otro cwd.
-    # Nunca pisan uno declarado en roles.py.
+    # Nunca pisan uno declarado en la config.
     for n, w in _implicitos().items():
         cfg["workspaces"].setdefault(n, w)
+    if not HOST:
+        HOST = cfg.get("maquina_default") or "local"
+    if HOST not in cfg["maquinas"]:
+        _die(f"máquina `{HOST}` no declarada. Declaradas: {', '.join(cfg['maquinas'])} "
+                 f"(se declaran en ~/.orq/config.toml)")
     return cfg
 
 
@@ -329,7 +374,7 @@ def detectar_recursos(intent, cfg):
     for nombre, r in (cfg.get("recursos_exclusivos") or {}).items():
         # Un recurso de MI-EMPRESA (gestor-docs, base_qa…) no aplica en otro workspace: "legacy"
         # o "seed" en un intent de otro repo no tocan esa base ni esa cola.
-        if r.get("solo_ws") and (WS_NOMBRE or cfg["workspace_default"]) not in r["solo_ws"]:
+        if r.get("solo_ws") and (WS_NOMBRE or cfg.get("workspace_default")) not in r["solo_ws"]:
             continue
         for pat in r.get("detectar", []):
             if pat.lower().strip("*").strip(".") in low:
@@ -1365,7 +1410,7 @@ def cmd_status(args):
             dentro = f"cd {m.get('cwd','~')} && ~/.local/bin/{acc}"
             st, extra = bst, (f"   {dentro}" if es_local(cfg)
                               else f"   ssh remota-tty '{dentro}'")
-        print(f"  {j:<10}{corta(m.get('ws', cfg['workspace_default']),16):<18}"
+        print(f"  {j:<10}{corta(m.get('ws', cfg.get('workspace_default') or WS_NOMBRE),16):<18}"
               f"{corta(m.get('key',''),38):<40}"
               f"{corta(m.get('specialist') or '-',26):<28}{st}{extra}")
     print()
@@ -1381,7 +1426,7 @@ def cmd_ls(args):
     for k, v in sorted(ses.items()):
         # sin prefijo `<ws>:` = clave anterior a los workspaces = el default
         ws_k, _, resto = k.partition(":")
-        ws_k, k = (ws_k, resto) if resto and ws_k in cfg["workspaces"] else (cfg["workspace_default"], k)
+        ws_k, k = (ws_k, resto) if resto and ws_k in cfg["workspaces"] else (cfg.get("workspace_default") or WS_NOMBRE, k)
         print(f"  {corta(ws_k,16):<18}{k:<40}{v}")
     print()
     return 0
@@ -1562,6 +1607,8 @@ def cmd_scout(args):
     arq, target, clave = sel["arquetipo"], sel["target"], sel["clave"]
     sc = cfg["arquetipos"]["scout"]
     claude = expand(bin_claude(cfg, sc["maquina"]))
+    if os.sep not in claude:                   # nombre pelado ("claude"): se busca en el PATH
+        claude = shutil.which(claude) or claude
     if not (os.path.isfile(claude) and os.access(claude, os.X_OK)):
         print(f"no encuentro el binario de claude en {claude}", file=sys.stderr)
         return 1
@@ -2110,7 +2157,7 @@ def cmd_reap(args):
     # Con --ws explícito solo se mira (y se borra) ese workspace: un `reap --force` para
     # limpiar un repo no puede llevarse de paso los worktrees de otro (2026-10-08).
     def del_ws(m):
-        return not args.ws or m.get("ws", cfg["workspace_default"]) == WS_NOMBRE
+        return not args.ws or m.get("ws", cfg.get("workspace_default") or WS_NOMBRE) == WS_NOMBRE
     wts = {w: m for w, m in todos.items() if del_ws(m)}
     if args.ws:
         print(f"\n  solo workspace `{WS_NOMBRE}` ({len(wts)} de {len(todos)} worktrees)")
@@ -2165,7 +2212,7 @@ def cmd_reap(args):
                 estado += "  → se borra" if args.force else "  → borrable (--force)"
         # el registro tiene dos formas: una sesión (per-task) o varias (worktree compartido)
         ses = m.get("sesiones") or ([m["sesion"]] if m.get("sesion") else [])
-        print(f"  {corta(w,50):<52}{corta(m.get('ws', cfg['workspace_default']),16):<18}"
+        print(f"  {corta(w,50):<52}{corta(m.get('ws', cfg.get('workspace_default') or WS_NOMBRE),16):<18}"
               f"{corta(m.get('rama','?'),28):<30}"
               f"{str(m.get('destruccion','?')):<12}{estado}")
         if ses:
@@ -2196,9 +2243,10 @@ def cmd_reap(args):
 
 def main():
     ap = argparse.ArgumentParser(prog="orq", description="orquestador de sesiones Claude")
-    ap.add_argument("--host", choices=["local", "remota"],
-                    help="dónde corren las sesiones (default: ORQ_HOST o local)")
-    ap.add_argument("--ws", help="workspace declarado en roles.py (default: el que contiene "
+    ap.add_argument("--host",
+                    help="máquina donde corren las sesiones, una de `maquinas` de la config "
+                         "(default: ORQ_HOST, maquina_default de la config, o local)")
+    ap.add_argument("--ws", help="workspace declarado en ~/.orq/config.toml (default: el que contiene "
                                  "el cwd, si no workspace_default)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
