@@ -4,7 +4,7 @@
 - **Especialista:** general-purpose (haiku)
 - **Proyecto:** orquestar-sesiones (`~/.claude/skills/orquestar-sesiones`), rama `main`
 - **Depende de:** — (primera del plan)
-- **Estado:** `pending`
+- **Estado:** `done`
 
 ---
 
@@ -30,7 +30,8 @@ config actual, para comparar después de mover la config (DD-4).
 
 ## Resultado
 <!-- SE LLENA AL CERRAR (estado done/skipped). Vacío mientras esté pending. -->
-- **Estado final:**
-- **Resumen:**
-- **Archivos tocados:**
-- **Verificado por:**
+- **Estado final:** `done`
+- **Resumen:** 8 capturas (`need` ×4 de MI-EMPRESA y claude-dashboard, `plan` 133 y 8, `status`, `--help`) en `~/.orq/regresion/antes-002/`, todas rc=0, más `COMANDOS.txt`. Script reutilizable: `captura.sh <orq.py> <dir>`.
+- **Archivos tocados:** `~/.orq/regresion/antes-002/*` (fuera del repo).
+- **Verificado por:** orquestador; rc=0 y tamaño > 0 en las 8; sin `spawn`/`scout` (solo `need`, que emite tokens con TTL 10 min).
+- **Desviaciones:** la salida de `need`/`status` depende del estado vivo de git y de las sesiones (ramas, dirty, ACTIVO). Por eso TASK-011 compara corriendo el `orq.py` de `main` y el del worktree **en el mismo momento**, y estas capturas quedan como registro.

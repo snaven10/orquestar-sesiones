@@ -56,7 +56,7 @@ ejemplo genérico, y después reescribe el historial y publica.
 ## 4. Tasks y orden
 | Task | Qué | Especialista | Modelo | Depende de | Estado |
 |------|-----|--------------|--------|------------|--------|
-| **TASK-008** | Capturas de regresión ANTES (need/plan con la config actual) | general-purpose | haiku | — | `pending` |
+| **TASK-008** | Capturas de regresión ANTES (need/plan con la config actual) | general-purpose | haiku | — | `done` |
 | **TASK-009** | Loader de dos capas + `config.example.toml` + migrar la config del usuario a `~/.orq/config.toml` | general-purpose | sonnet | TASK-008 | `pending` |
 | **TASK-010** | Texto genérico en `orq.py`, `SKILL.md`, `references/`, planes; `README.md` + `LICENSE` MIT | general-purpose | sonnet | TASK-009 | `pending` |
 | **TASK-011** | Verificación: regresión idéntica + HOME vacío funciona + árbol sin menciones | orquestador | — | TASK-010 | `pending` |
