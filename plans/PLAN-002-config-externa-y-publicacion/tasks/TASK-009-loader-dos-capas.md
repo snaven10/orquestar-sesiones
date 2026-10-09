@@ -4,7 +4,7 @@
 - **Especialista:** general-purpose (sonnet)
 - **Proyecto:** orquestar-sesiones (`~/.claude/skills/orquestar-sesiones`), worktree de orq
 - **Depende de:** TASK-008
-- **Estado:** `pending`
+- **Estado:** `done`
 
 ---
 
@@ -16,7 +16,7 @@ orq se comporta igual que antes (DD-1, DD-2, DD-3).
 ## Contexto verificado
 - `load_cfg()` en `assets/orq.py` importa `roles.CFG` y le suma `_implicitos()`
   (`~/.orq/workspaces.json`).
-- `HOST = os.environ.get("ORQ_HOST", "local")` (`orq.py:19`); `maq(cfg)` indexa `cfg["maquinas"][HOST]`.
+- `HOST = os.environ.get("ORQ_HOST", "<nombre de una máquina del autor>")` (`orq.py:19`); `maq(cfg)` indexa `cfg["maquinas"][HOST]`.
 - `ws_actual(cfg)` usa `WS_NOMBRE or cfg["workspace_default"]`.
 - `_resolver_por_ruta` imprime "declaralo en roles.py" para workspaces implícitos.
 - Claves del usuario hoy en `roles.py`: `maquinas`, `workspaces`, `workspace_default`,
@@ -51,7 +51,7 @@ orq se comporta igual que antes (DD-1, DD-2, DD-3).
   "declaralo en ~/.orq/config.toml".
 
 ## Criterios de aceptación
-- [ ] `git grep -n -i -E 'mi-empresa|org|remota|_backend|-srv' assets/roles.py assets/config.example.toml` vacío.
+- [ ] `git grep -n -i` con la lista privada de identificadores del cliente sobre `assets/roles.py` y `assets/config.example.toml` vacío.
 - [ ] `python3 -m py_compile assets/orq.py assets/roles.py` OK.
 - [ ] Con `~/.orq/config.toml`: las capturas de TASK-008 repetidas dan igual (eso lo cierra TASK-011,
   pero el worker lo corre antes de entregar y reporta el diff).
@@ -67,7 +67,22 @@ orq se comporta igual que antes (DD-1, DD-2, DD-3).
 
 ## Resultado
 <!-- SE LLENA AL CERRAR (estado done/skipped). Vacío mientras esté pending. -->
-- **Estado final:**
-- **Resumen:**
-- **Archivos tocados:**
-- **Verificado por:**
+- **Estado final:** done
+- **Resumen:** `roles.py` queda genérico (máquina `local`, `workspaces`/`specialists` vacíos, solo
+  `devctx_index`; scout.maquina = `local`). La config del usuario vive en `~/.orq/config.toml`
+  (incluye `[arquetipos.scout] maquina = "local"`); respaldo en `~/.orq/roles.py.antes-002`.
+  `load_cfg()` hace deepcopy de `roles.CFG` + merge profundo del TOML (`ORQ_CONFIG` o
+  `~/.orq/config.toml`) + implícitos; TOML roto / archivo ilegible / `ORQ_CONFIG` inexistente /
+  host no declarado / sin ws → mensaje con ruta y rc 2. `HOST` = `--host` > `ORQ_HOST` >
+  `maquina_default` > `local`, resuelto en `load_cfg`. `--host` ya no tiene `choices`. Sin
+  `workspace_default` y fuera de un repo → error rc 2. Mensajes "declaralo en ~/.orq/config.toml".
+  Etiqueta de origen `(roles)` en `need` se conserva. Extra: el binario `claude` pelado ("claude")
+  se resuelve con `shutil.which` en scout. `assets/config.example.toml` creado.
+- **Archivos tocados:** `assets/orq.py`, `assets/roles.py`, `assets/config.example.toml`,
+  `~/.orq/config.toml` (fuera del repo)
+- **Verificado por:** tomllib vs `roles.CFG` original igual (maquinas, workspaces,
+  workspace_default, specialists, recursos); `py_compile`; regresión main vs worktree solo difiere
+  en tokens, rutas de COMANDOS y texto de `--help`, más `⚠ ACTIVO` que es un auto-match de
+  `pgrep -fa claude` con la ruta de `orq.py` (la de main contiene `.claude`); con una copia en una
+  ruta con `claude` el diff desaparece; HOME vacío `--help`/`need` en repo temporal; ORQ_CONFIG
+  roto/inexistente rc 2; `git grep` vacío.

@@ -3,52 +3,22 @@
 
 CFG = {
 
+    # Máquinas donde corren las sesiones. Default: solo esta (`local`). El usuario declara las
+    # suyas en ~/.orq/config.toml y elige la default con `maquina_default`.
     "maquinas": {
         "local": {
             "ssh": [],                         # vacío = local: `bash -s` sin SSH
-            "claude": "~/.local/bin/claude",
-            # 20 cores / 47 GB, pero ~24 GB libres con el trabajo propio (node, java,
-            # MCPs). Cada sesión ≈1 GB (claude + sus MCP) + 2-3 GB si compila/testea
-            # Quarkus. Y PLAN-043 DD-7 serializa las extracciones: el 2º slot es para
-            # review/inventario de solo lectura, no para un segundo implementador.
+            "claude": "claude",                # el del PATH
             "concurrencia": 2,
-            "tiene_devctx": True,
-        },
-        "remota": {
-            "ssh": ["ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
-                    "-o", "ExitOnForwardFailure=no", "remota"],
-            "claude": "~/.local/bin/claude",   # NO está en el PATH no-interactivo
-            "concurrencia": 4,                 # 8 cores/31GB; el techo real es el rate limit
-            "tiene_devctx": False,             # los aprendizajes vuelven por `orq harvest`
+            "tiene_devctx": False,
         },
     },
 
-    # Workspaces: DÓNDE trabaja orq. Selección: `--ws` -> el ws cuyo `path` contiene el cwd
-    # -> `workspace_default`. `path` es relativo al HOME de la máquina que corre las sesiones
-    # (remota también tiene ~/mi-empresa), por eso se conserva el `~`.
+    # Workspaces: DÓNDE trabaja orq. Se declaran en ~/.orq/config.toml; sin declarar, el
+    # workspace sale del repo git del cwd (implícito, se registra en ~/.orq/workspaces.json).
     #   multi: dir con varios repos hijos (los targets se descubren: subdirs con .git).
     #   repo:  un repo suelto; el target es el propio repo.
-    "workspaces": {
-        "mi-empresa": {
-            "path": "~/mi-empresa", "tipo": "multi",
-            # `~/mi-empresa` NO es repo git: cada proyecto es su propio repo, así que el escaneo de
-            # agentes se detiene en la raíz del repo hijo y nunca llega a ~/mi-empresa/.claude/agents/.
-            # Sin este flag el agente NO resuelve y cae a general-purpose EN SILENCIO.
-            "add_dir": "~/mi-empresa",
-            "agents": "~/mi-empresa/.claude/agents",
-            "plans": "~/mi-empresa/plans",
-            "worktrees_en": "~/mi-empresa/.orq-trees",
-            # tokens que no distinguen nada entre repos de MI-EMPRESA
-            "ruido": ["mi-empresa", "srv", "backend", "microservice", "microservicio", "back", "end"],
-            # las claves de ~/.orq/*.json de MI-EMPRESA son anteriores a los workspaces: no se migran
-            "claves_sin_prefijo": True,
-        },
-        "claude-dashboard": {
-            "path": "~/personal/claude-dashboard", "tipo": "repo",
-            # repo suelto: sin add_dir (el agente de proyecto resuelve por cwd).
-        },
-    },
-    "workspace_default": "mi-empresa",
+    "workspaces": {},
 
     "arquetipos": {
         "worker": {
@@ -88,32 +58,15 @@ CFG = {
             "disallowed": ["Write", "Edit"],
             "persist": False,
             "modelo": "sonnet",
-            "maquina": "local",                  # remota no tiene devctx
+            "maquina": "local",                # el scout necesita devctx: máquina con tiene_devctx
             "costo": [0.25, 0.45],             # USD estimados (1er scout real: $0.36, 17 turnos)
             "timeout": 600,
         },
     },
 
-    # arquetipo@target -> specialist en ~/mi-empresa/.claude/agents/
+    # arquetipo@target -> specialist. Se declara en ~/.orq/config.toml.
     # Sin entrada => el resolver marca "sin specialist" y la skill propone crear uno.
-    "specialists": {
-        "worker@api-backend":                     "java-backend-specialist",
-        "worker@web-frontend":                    "angular-frontend-architect",
-        "worker@qc-service":        "java-backend-specialist",
-    # Worktrees que SON el árbol vigente, no duplicados: el código de Calidad
-    # está 157 commits adelante en qc-service-dev, no en el checkout principal.
-    "worker@qc-service-dev":                 "java-backend-specialist",
-    "worker@web-frontend-qc":            "angular-frontend-architect",
-        "worker@auth-service": "authentication-specialist",
-        "worker@docs-service":              "docs-specialist",
-        # Micros de mi-empresa (PLAN-043): mismo stack Quarkus reactive que el monolito.
-        "worker@actos-srv":             "java-backend-specialist",
-        "worker@clientes-srv":                      "java-backend-specialist",
-        "worker@ajustes-srv":       "java-backend-specialist",
-        "reviewer@*":                               "code-reviewer",
-        # HUECOS CONOCIDOS que el resolver va a marcar:
-        #   worker@api-plantillas · worker@tickets-srv · qa@* · validator@*
-    },
+    "specialists": {},
 
     # ── Match por afinidad (escalón 2 de la resolución de specialists, PLAN-001 DD-3) ──
     # Puntaje mecánico y determinístico: gratis, reproducible y, sobre todo, NUNCA autoasigna:
@@ -157,37 +110,9 @@ CFG = {
     # Recursos EXCLUSIVOS: el lock es por RECURSO, no por repo.
     # Dos worktrees perfectamente aislados igual se destruyen si tocan lo mismo.
     "recursos_exclusivos": {
-        "gestor-docs": {
-            "solo_ws": ["mi-empresa"],
-            "motivo": "parallelism=2 -> 8% de registros fallan con 500 (colisión de nombres)",
-            "detectar": ["gestor-docs", "carga masiva", "subida de documentos"],
-        },
-        "base_qa": {
-            "solo_ws": ["mi-empresa"],
-            "motivo": "acquisition timeout 5s; fallos de RED que se leen como bug de código",
-            "detectar": ["migracion", "migración", "ddl", "seed", "oracle"],
-        },
         "devctx_index": {
-            "motivo": "2 corrupciones: central.duckdb.CORRUPTO-1251, index.duckdb.wal.CORRUPTO-1907",
+            "motivo": "el índice de devctx se corrompe si dos sesiones reindexan a la vez",
             "detectar": ["index_repo", "reindex", "devctx index", "indexar"],
-        },
-        "module_federation": {
-            "solo_ws": ["mi-empresa"],
-            "motivo": "config asimétrica entre MFEs: merge + revert de emergencia a los 45 min",
-            "detectar": ["webpack", "module federation", "module-federation", "remoteentry"],
-        },
-        "quarkus_live_reload": {
-            "solo_ws": ["mi-empresa"],
-            "motivo": "editar Java con quarkus:dev sirviendo una medición MATA la corrida en curso "
-                      "(live reload); PLAN-044 RUNBOOK §8.3 perdió 7 de 9 tandas. Invalida trabajo "
-                      "YA HECHO, no lo demora",
-            "detectar": ["quarkus:dev", "monolito local", "micro arriba", "medición en curso",
-                         "medicion en curso", "live reload"],
-        },
-        "etl_legacy": {
-            "solo_ws": ["mi-empresa"],
-            "motivo": "no idempotente; deja colas en ERROR con intentos=3 que no se reintentan",
-            "detectar": ["etl", "legacy", "anotaciones", "registros históricos"],
         },
     },
 

@@ -18,14 +18,14 @@ ejemplo genérico, y después reescribe el historial y publica.
 - **Ya existe la mitad del mecanismo.** `load_cfg()` (`assets/orq.py`) importa `roles.CFG` y le
   aplica encima `~/.orq/workspaces.json` (implícitos); `cargar_overlay()` lee
   `~/.orq/specialists.json`. Falta un archivo de config del usuario que pise el resto.
-- **Qué es del usuario en `roles.py`:** `maquinas` (local/remota, ssh, concurrencia), `workspaces` +
+- **Qué es del usuario en `roles.py`:** `maquinas` (local y remotas, ssh, concurrencia), `workspaces` +
   `workspace_default`, `specialists`, y 5 de los 6 `recursos_exclusivos` (todos con
   `solo_ws` de un solo workspace). Lo demás es genérico.
-- **`HOST` está fijado a `"local"`** (`orq.py:19`, `ORQ_HOST` o `local`): otro usuario no tiene `local`.
-- **Menciones al cliente en el árbol actual** (`git grep -i`): `roles.py` 29, `orq.py` 10,
-  `SKILL.md` 9, `references/escenarios.md` 6, planes ~40. En **todo el historial**: 173 líneas;
-  identificadores: nombres de repos del cliente (`*_BackEnd`, `*_FrontEnd`, `*-srv`…), planes
-  `PLAN-12x/13x`, `remota` y su IP de Tailscale.
+- **`HOST` estaba fijado al nombre de una máquina del autor** (`orq.py:19`, `ORQ_HOST` o ese nombre): otro usuario no tiene esa máquina.
+- **Menciones al cliente en el árbol y el historial.** Hay nombres del cliente del usuario
+  (repos, planes, máquinas, una IP privada y rutas del HOME) repartidos en código, `SKILL.md`,
+  `references/` y los planes, y en el historial git. No se listan acá: la lista privada vive
+  fuera del repo y alimenta el grep de verificación.
 - **Python 3.14** local → `tomllib` en la stdlib: TOML se lee sin pip y **admite comentarios**
   (los de `roles.py` explican el porqué de cada valor; JSON los perdería).
 - **Regresión ya montada:** `~/.orq/regresion/antes/` tiene capturas de `need`/`plan` de PLAN-001
@@ -57,9 +57,9 @@ ejemplo genérico, y después reescribe el historial y publica.
 | Task | Qué | Especialista | Modelo | Depende de | Estado |
 |------|-----|--------------|--------|------------|--------|
 | **TASK-008** | Capturas de regresión ANTES (need/plan con la config actual) | general-purpose | haiku | — | `done` |
-| **TASK-009** | Loader de dos capas + `config.example.toml` + migrar la config del usuario a `~/.orq/config.toml` | general-purpose | sonnet | TASK-008 | `pending` |
-| **TASK-010** | Texto genérico en `orq.py`, `SKILL.md`, `references/`, planes; `README.md` + `LICENSE` MIT | general-purpose | sonnet | TASK-009 | `pending` |
-| **TASK-011** | Verificación: regresión idéntica + HOME vacío funciona + árbol sin menciones | orquestador | — | TASK-010 | `pending` |
+| **TASK-009** | Loader de dos capas + `config.example.toml` + migrar la config del usuario a `~/.orq/config.toml` | general-purpose | sonnet | TASK-008 | `done` |
+| **TASK-010** | Texto genérico en `orq.py`, `SKILL.md`, `references/`, planes; `README.md` + `LICENSE` MIT | general-purpose | sonnet | TASK-009 | `done` |
+| **TASK-011** | Verificación: regresión idéntica + HOME vacío funciona + árbol sin menciones | orquestador | — | TASK-010 | `done` |
 | **TASK-012** | Reescribir historial y publicar (gate del usuario antes del push) | orquestador | — | TASK-011 + PLAN-009 del dashboard | `pending` |
 
 Todo secuencial: cada task pisa los mismos archivos que la anterior.

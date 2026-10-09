@@ -14,7 +14,7 @@ Cuando no hay agente que sirva, `orq` lanza (con aval) una sesión investigadora
 ## Contexto verificado
 - Spawn headless ya existe: `claude -p --output-format json`, prompt por stdin, `--allowedTools` por tool (orq.py:~636-648). Reutilizar esa construcción de flags, no duplicarla.
 - Skill: `claude-code-setup:claude-automation-recommender` (read-only, `references/subagent-templates.md` en `~/.claude/plugins/cache/claude-plugins-official/claude-code-setup/1.0.0/skills/claude-automation-recommender/`).
-- remota no tiene devctx → el scout corre siempre en local.
+- la máquina remota no tiene devctx → el scout corre siempre en la máquina local.
 - Tokens: `need` emite `T-xxxxxx` en `~/.orq/tokens/` con `propuesta`; TTL `TOKEN_TTL`.
 
 ## Archivos

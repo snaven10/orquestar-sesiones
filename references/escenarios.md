@@ -1,31 +1,31 @@
 # Los 17 escenarios y su mitigación
 
-Ninguno es hipotético. Cada uno se verificó en vivo en remota, está documentado en la
+Ninguno es hipotético. Cada uno se verificó en vivo en una máquina remota, está documentado en la
 memoria de DevCtxEngine, o salió del corpus de 1166 archivos TASK en 151 PLANes.
 
 ## 🔴 Críticos — corrompen datos o trabajo
 
 ### 1. Sesión humana viva en el repo
-**Visto en vivo, dos veces en una tarde.** `api-plantillas` cambió de rama tres veces
+**Visto en vivo, dos veces en una tarde.** Un repo de plantillas cambió de rama tres veces
 en seis horas (`feat/ejemplo-b` → `feat/ejemplo-a` → `chore/numeros-medidos`).
 Un `git checkout` del orquestador le rompe el árbol a quien está trabajando.
 **Mitigación**: preflight lee reflog + procesos `claude` vivos. Actividad < 30 min →
 worktree obligatorio, nunca el árbol principal.
 
 ### 2. Árbol sucio ajeno
-**Visto en vivo**: `web-frontend` con 18 archivos sin commitear en `development`.
+**Visto en vivo**: Un repo frontend con 18 archivos sin commitear en `development`.
 Un worker que arranca ahí los mezcla en su commit.
 **Mitigación**: `git status --porcelain` antes de asignar. Política `refuse` por defecto.
-Jamás `git add -A` (además prohibido por CLAUDE.md por los `environment*.ts`).
+Jamás `git add -A` (además prohibido por el CLAUDE.md del proyecto cuando hay archivos de entorno que no se commitean).
 
 ### 3. El nombre del worktree miente
-Memoria: `api-backend-dev` **no estaba** en `development`; un revisor delegado
-reportó commits faltantes que sí existían. Mismo patrón en `_qa`, `_dev`, `_calidad`.
+Memoria: un worktree llamado `api-backend_development` **no estaba** en `development`; un revisor delegado
+reportó commits faltantes que sí existían. Mismo patrón en `_qa`, `_dev` y similares.
 **Mitigación**: `git rev-parse --abbrev-ref HEAD` en vivo, siempre. Al pasar contexto
 entre agentes: **SHAs concretos**, nunca "mirá la rama X".
 
-### 4. ETL / gestor-docs no toleran concurrencia
-Con `parallelism=2`, **8% de registros fallan con 500** porque la resolución de colisión
+### 4. ETL / gestor documental no toleran concurrencia
+Con `parallelism=2` en una carga masiva, **8% de registros fallan con 500** porque la resolución de colisión
 de nombres no sobrevive contención. Se bajó a `parallelism=1`; el facade nunca se arregló.
 Deja colas en `ERROR` con `intentos=3` que ya no se reintentan solas.
 **Mitigación**: lock **por recurso**, no por repo. Dos worktrees limpios no te salvan.
@@ -38,7 +38,7 @@ Dos corrupciones históricas: `central.duckdb.CORRUPTO-1251` (2026-08-13) e
 
 ### 6. El MCP de devctx racea entre sesiones
 Bindeado a `web-frontend`, las búsquedas devolvieron código de
-`auth-service`: otra sesión pisó el "current project" del mismo
+`servicio-auth`: otra sesión pisó el "current project" del mismo
 proceso MCP. Un `reviewer` puede auditar **otro repo sin saberlo**.
 **Mitigación**: `mcpServers:` en el frontmatter del agente, un proceso por sesión.
 
@@ -58,13 +58,13 @@ Tras un merge, **4 tests arreglados por un subagente quedaron fuera del commit**
 ### 9. Gate cross-repo: backend antes que frontend
 Regla documentada del workspace: *"backend completa el contrato antes de que el frontend
 lo consuma"*. Precedente de bug: el mapa `ROL_A_SUFIJOS` duplicado entre backend y
-frontend se desincronizó (`ConvFem` vs `ConFem`), corregido dos veces.
+frontend se desincronizó (dos sufijos casi iguales, uno con una letra de menos), corregido dos veces.
 **Mitigación**: Fase 0 secuencial — el orquestador fija el contrato y lo **inyecta** a
 ambos workers. No lo negocian entre ellos.
 
-### 10. Oracle QA falla por red, no por código
+### 10. La base de QA falla por red, no por código
 500 intermitentes en QA por acquisition timeout de 5s cuando la conexión cae en un
-worker-node con mal firewall. Oracle al 7.5% de uso.
+worker-node con mal firewall. la base al 7.5% de uso.
 **Mitigación**: antes de escalar un 500 intermitente como bug, revisar este patrón.
 Un fan-out agresivo multiplica los falsos positivos.
 
@@ -97,17 +97,17 @@ SHAs, archivos tocados, ramas — no contra el markdown.
 ## 🟢 De infraestructura
 
 ### 15. Colisión de puertos en QA
-remota no tiene contenedores ni puertos escuchando. Si `qa` levanta Quarkus o Angular,
+Una máquina remota sin contenedores ni puertos escuchando. Si `qa` levanta Quarkus o Angular,
 toma 8080/4200; dos `qa` en paralelo pelean y el segundo muere.
 **Mitigación**: `qa` declara `exclusivo: [puertos]`. No paraleliza como un `reviewer`.
 
-### 16. remota sin devctx, sin hooks, sin allowlist
+### 16. Máquina remota sin devctx, sin hooks, sin allowlist
 `~/.devctx` vacío. `settings.json` de 113 bytes: solo tema y notificaciones.
 Los workers remotos van ciegos y sus aprendizajes **no pueden volver por `remember`**.
 **Mitigación**: `orq harvest` es la única vía de retorno. Sin cosecha, se pierden.
 
-### 17. Specialist faltante / workspace ajeno a MI-EMPRESA
-Verificado al sumar el workspace `claude-dashboard` (repo suelto): `roles.py` mapeaba
+### 17. Specialist faltante / workspace ajeno al principal
+Verificado al sumar un segundo workspace (repo suelto): la config mapeaba
 `reviewer` a `code-reviewer`, que ahí no existe; y un nombre mapeado sin `.md` hacía que
 `claude --agent` no lo encontrara y cayera a `general-purpose` en silencio. En un repo sin
 historia de agentes tampoco hay candidatos que proponer.

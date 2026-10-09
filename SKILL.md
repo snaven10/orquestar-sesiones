@@ -1,11 +1,11 @@
 ---
 name: orquestar-sesiones
 description: >
-  Levanta sesiones Claude especializadas en remota (o local) para trabajar en paralelo,
+  Levanta sesiones Claude especializadas en otra máquina (o local) para trabajar en paralelo,
   proponiendo qué agentes hacen falta y pidiendo aval antes de gastar.
   Trigger: el usuario pide levantar sesiones, trabajar en paralelo, orquestar agentes,
   repartir tareas entre micros, o correr review/qa/validación sobre trabajo en curso.
-license: Apache-2.0
+license: MIT
 metadata:
   author: snaven10
   version: "1.0"
@@ -35,17 +35,26 @@ escape. Si te ves pensando "esta es obvia, la levanto directo" — pará. No lo 
 
 ### 1. Resolver qué hace falta
 
-`orq` es un wrapper en `~/.local/bin/orq`. Se invoca desde local, desde cualquier directorio.
-**Las sesiones corren en local por defecto** (local, con devctx, concurrencia 2). Para remota:
-`orq --host remota ...` o `ORQ_HOST=remota` — ahí habla por SSH y los workers NO tienen devctx.
+`orq` es un wrapper en `~/.local/bin/orq`. Se invoca desde cualquier directorio.
+**Las sesiones corren en la máquina `maquina_default` de tu config** (o `local`). Para otra
+máquina declarada: `orq --host <maquina> ...` o `ORQ_HOST=<maquina>` — si tiene `ssh`, habla
+por SSH y, sin devctx allá, los workers NO guardan aprendizajes en vivo.
 
-Por qué 2 en local: ~24 GB libres con el trabajo propio; cada sesión ≈1 GB + 2-3 GB si compila
-Quarkus; y PLAN-043 DD-7 serializa extracciones, así que el 2º slot es review/inventario.
+La concurrencia por máquina (`concurrencia`) se declara en la config: dimensionala según la
+RAM libre (cada sesión ≈1 GB + 2-3 GB si compila) y el rate limit de tu cuenta.
 
-**Workspace.** `roles.py["workspaces"]` declara dónde se trabaja. Hay dos tipos:
+## Configuración
+
+Tu configuración vive en **`~/.orq/config.toml`** (fuera del código). Se aplica encima de
+los defaults genéricos de `assets/roles.py` (merge profundo). Partí de
+[assets/config.example.toml](assets/config.example.toml), que documenta cada campo: máquinas,
+workspaces, specialists, recursos exclusivos. Sin archivo, orq corre en `local` y usa el repo
+git del cwd como workspace. `ORQ_CONFIG=/ruta/otra.toml` prueba otra config sin tocar la tuya.
+
+**Workspace.** La sección `[workspaces.*]` de tu config declara dónde se trabaja. Hay dos tipos:
 `multi` (un directorio con varios repos adentro; los targets son los subdirectorios con
-`.git`) y `repo` (un repo suelto; el target es el propio repo). Ejemplos hoy declarados:
-`mi-empresa` (multi, `~/mi-empresa`) y `claude-dashboard` (repo).
+`.git`) y `repo` (un repo suelto; el target es el propio repo). Ejemplo: `mi-empresa` (multi,
+`~/proyectos/mi-empresa`) y `herramienta` (repo).
 
 Cómo se elige, en este orden: `orq --ws <nombre|ruta> ...` → `ORQ_WS` → el workspace
 declarado cuyo `path` contiene el cwd (gana el más largo) → **el repo git del cwd, como
@@ -54,15 +63,15 @@ así que `spawn` lo respeta aunque cambies de directorio entre `need` y `spawn`.
 
 **Cualquier repo funciona sin declararlo.** Un repo no declarado se registra solo como
 workspace `repo` en `~/.orq/workspaces.json` (avisa con `➕ workspace implícito`). Un
-worktree se resuelve a su repo principal. Declaralo en `roles.py` solo si necesita `add_dir`,
-`ruido` o recursos propios. Los recursos exclusivos de MI-EMPRESA llevan `solo_ws: ["mi-empresa"]`:
-un "legacy" o "seed" en otro repo no bloquea la cola ni la base de MI-EMPRESA.
-`--add-dir` solo se pasa si el workspace declara `add_dir` (hoy `mi-empresa`); en un `repo`
+worktree se resuelve a su repo principal. Declaralo en tu config solo si necesita `add_dir`,
+`ruido` o recursos propios. Los recursos exclusivos pueden llevar `solo_ws: ["mi-empresa"]`:
+un "seed" en otro repo no bloquea la base de QA de ese workspace.
+`--add-dir` solo se pasa si el workspace declara `add_dir`; en un `repo`
 el agente de proyecto resuelve por cwd y no hace falta.
 
 ```bash
 orq need "<lo que se va a trabajar>"                    # ws por cwd / default
-orq --ws claude-dashboard need "<lo que se va a trabajar>"
+orq --ws herramienta need "<lo que se va a trabajar>"
 orq --ws ~/personal/otro-repo need "<lo que se va a trabajar>"   # ruta: se registra sola
 ```
 
@@ -86,7 +95,7 @@ Esperá que el usuario verifique, modifique o cancele.
 **Nunca se autoasigna nada que el usuario no haya confirmado**, y **nunca hay agentes
 globales automáticos**: un agente de stack global existe solo si el usuario elige `[g]` al guardarlo.
 
-**Escalón 1 — confirmado.** Está en `~/.orq/specialists.json` o en `roles.py["specialists"]`
+**Escalón 1 — confirmado.** Está en `~/.orq/specialists.json` o en la tabla `[specialists]` de tu config (o de `roles.py`)
 **y el `.md` existe** en un dir alcanzable. Se usa. No hacés nada.
 
 **Escalón 2 — candidatos en disco.** El mapeo no existe, pero hay agentes `.md` (del repo,
@@ -107,8 +116,8 @@ orq agent use <nombre> <arquetipo>@<target>     # target * = todos
 Queda en `specialists.json`; la próxima vez es escalón 1.
 
 **Escalón 3 — scout.** No hay candidatos. `need` agrega "SCOUTS PROPUESTOS", un scout por
-faltante, con su costo. El scout es una sesión `claude -p` de solo lectura (en local, tiene
-devctx) que investiga el repo y deja un **borrador**; no escribe nada más. Qué hacés vos:
+faltante, con su costo. El scout es una sesión `claude -p` de solo lectura (en la máquina del
+arquetipo `scout`, con devctx) que investiga el repo y deja un **borrador**; no escribe nada más. Qué hacés vos:
 
 1. Presentás el scout **con su costo** y **PARÁS por el aval**. Cuesta plata: es un spawn.
 2. Con el aval: `orq scout <arq>@<target> --token T-xxxxxx [--only S1]`. Un scout por
@@ -129,7 +138,7 @@ Mostralo aunque parezca obvio; el usuario decide, vos no.
 | Opción | Dónde | Resuelve desde | Costo | Ws |
 |---|---|---|---|---|
 | `[p]` proyecto | `<repo>/.claude/agents/` | cwd en ese repo | ninguno; queda sin commitear (`save` no commitea) | multi y repo |
-| `[m]` monorepo | `<ws.agents>/` (ej. `~/mi-empresa/.claude/agents/`) | **solo con `--add-dir`** | el flag es obligatorio | **solo multi** con `add_dir` |
+| `[m]` monorepo | `<ws.agents>/` (ej. `~/proyectos/mi-empresa/.claude/agents/`) | **solo con `--add-dir`** | el flag es obligatorio | **solo multi** con `add_dir` |
 | `[g]` global | `~/.claude/agents/` | cualquier cwd | contamina todos tus proyectos | multi y repo |
 
 `save` valida `name` (kebab-case), `description` y `model` ∈ sonnet|opus|haiku|fable
@@ -196,7 +205,7 @@ la política de destrucción de cada worktree y limpia los jobs zombie del regis
 **Cierre de tasks en workspaces `repo`.** El plan vive dentro del repo, así que el
 prompt le pide al worker que cierre la task en la copia del plan de **su worktree** y lo
 commitee en su rama: el cierre viaja con el merge y el árbol principal queda limpio.
-En `multi` (`~/mi-empresa`) `plans/` no es parte de ningún repo y se escribe donde siempre.
+En `multi` (`~/proyectos/mi-empresa`) `plans/` no es parte de ningún repo y se escribe donde siempre.
 
 ### 5. Cosechar y evolucionar
 
@@ -207,33 +216,33 @@ escribe un marcador vacío y lleva meses estancado).
 Después: `/agent-evolve` — presenta los cambios al usuario y escribe los
 `## Learned Patterns` de cada agente que participó.
 
-Los workers en remota **no tienen devctx**: sus aprendizajes solo vuelven por el
+Los workers en una máquina sin devctx **no lo tienen**: sus aprendizajes solo vuelven por el
 resultado de `orq`. Si no cosechás, se pierden.
 
 ## Trampas verificadas
 
-**En un workspace `multi` con `add_dir`, el flag es obligatorio** (ejemplo MI-EMPRESA:
-`--add-dir ~/mi-empresa`). `~/mi-empresa` no es un repo git; cada proyecto es su propio repo. El
+**En un workspace `multi` con `add_dir`, el flag es obligatorio** (ejemplo:
+`--add-dir ~/proyectos/mi-empresa`). Ese directorio no es un repo git; cada proyecto es su propio repo. El
 escaneo de agentes sube desde el cwd hasta la **raíz del repo** y se detiene ahí — nunca
-llega a `~/mi-empresa/.claude/agents/`. Sin el flag: `--agent 'java-backend-specialist' not found`,
+llega a `~/proyectos/mi-empresa/.claude/agents/`. Sin el flag: `--agent 'java-backend-specialist' not found`,
 y **cae a `general-purpose` en silencio**: una sesión que parece funcionar y entrega trabajo
 sin criterio de dominio. `orq` lo pasa solo si el ws lo declara; en un `repo` no aplica.
 
-**Nombre mapeado sin `.md` = faltante.** Que un nombre figure en `roles.py` o en el overlay
+**Nombre mapeado sin `.md` = faltante.** Que un nombre figure en la config o en el overlay
 no significa que exista. Si el archivo no está, el resolver lo marca faltante con aviso y el
 gate de `spawn` frena (también en `need --plan`, si el PLAN declara un specialist inexistente).
 
-**El catálogo se lee del disco LOCAL**, aunque uses `--host remota`: no mira los agentes que
-haya en remota. Si el agente solo existe allá, `orq` lo va a dar por faltante.
+**El catálogo se lee del disco LOCAL**, aunque uses `--host <maquina>`: no mira los agentes que
+haya en la remota. Si el agente solo existe allá, `orq` lo va a dar por faltante.
 
 **`ORQ_CLAUDE` es solo para tests**: reemplaza el binario de `claude` (para probar con uno
 falso). No lo uses en operación real.
 
-**SSH a remota necesita `ClearAllForwardings`.** El `~/.ssh/config` tiene
-`RemoteForward 2223` + `ExitOnForwardFailure yes`: si el puerto está ocupado, la conexión
+**SSH a una máquina remota puede necesitar `ClearAllForwardings`.** Si tu `~/.ssh/config` tiene
+`RemoteForward` + `ExitOnForwardFailure yes`: si el puerto está ocupado, la conexión
 entera muere.
 
-**`claude` no está en el PATH de SSH no-interactivo en remota.** Ruta absoluta:
+**`claude` no está en el PATH de SSH no-interactivo en una máquina remota.** Ruta absoluta:
 `~/.local/bin/claude`.
 
 **El prompt va por stdin**, nunca como argumento — el anidamiento de comillas del SSH
@@ -260,10 +269,10 @@ tools en `roles.py`.
 - Confiar en el nombre de un worktree para saber en qué rama está. Siempre `git rev-parse`.
 - Asignar un worktree sin `git status --porcelain` antes.
 - Compartir un worktree entre dos agentes activos.
-- Correr ETL, carga a gestor-docs, migración Oracle o `index_repo --full` en paralelo.
+- Correr ETL, cargas masivas a un gestor documental, migraciones de base de datos o `index_repo --full` en paralelo.
   Son exclusivos **por recurso**, no por repo: dos worktrees limpios no te salvan.
 - Matar procesos por patrón (`pkill -f`). Solo por PID que vos lanzaste.
-- Confiar en `Estado: done` de un archivo TASK. De 131 `done`, 3 tenían el Result
+- Confiar en `Estado: done` de un archivo TASK. En un corpus real de 131 `done`, solo 3 tenían el Result
   Contract lleno. Verificá contra git (SHAs, archivos), no contra el markdown.
 
 ## Recursos

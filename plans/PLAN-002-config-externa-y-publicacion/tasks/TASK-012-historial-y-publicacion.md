@@ -14,15 +14,15 @@ del usuario (DD-5).
 
 ## Decisiones del usuario
 - Licencia: **MIT** (confirmado 2026-10-09).
-- Correo de autor en los commits: **pendiente** (propio vs `noreply` de GitHub vía `--mailmap`).
+- Correo de autor en los commits: **el propio** (confirmado 2026-10-09). Sin `--mailmap`.
 - Visibilidad: pública.
 
 ## Pasos
 - [ ] **Paso 1 — respaldo.** `git clone --mirror` a `~/respaldos/orquestar-sesiones-pre-publicacion.git`.
 - [ ] **Paso 2 — herramienta.** Bajar `git-filter-repo` de una release fijada al scratchpad.
 - [ ] **Paso 3 — reemplazos.** `reemplazos.txt` compartido con el dashboard (nombres del cliente,
-  repos, planes, `remota`, IP, rutas `/home/usuario`). En un clone fresco:
-  `filter-repo --replace-text reemplazos.txt --replace-message reemplazos.txt` (+ `--mailmap` si aplica).
+  repos, planes, máquinas, IP, rutas del HOME). En un clone fresco:
+  `filter-repo --replace-text reemplazos.txt --replace-message reemplazos.txt`.
 - [ ] **Paso 4 — verificación.** `git log --all -p | rg -i <patrón completo>` vacío;
   `git log --all --format='%an %ae %cn %ce'` según lo decidido; `py_compile` en el HEAD.
 - [ ] **Paso 5 — GATE.** Mostrar al usuario: lista de reemplazos, conteo de commits, resultado del

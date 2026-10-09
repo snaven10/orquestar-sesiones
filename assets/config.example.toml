@@ -1,0 +1,76 @@
+# Ejemplo de ~/.orq/config.toml. Copialo a ~/.orq/config.toml y adaptalo.
+# Se aplica ENCIMA de los defaults de roles.py (merge profundo): las tablas se combinan por
+# clave; las listas y los valores simples REEMPLAZAN. Todo es opcional: sin este archivo orq
+# corre en la máquina `local` y toma el workspace del repo git donde estés parado.
+# Para probar otra config sin tocar la tuya: ORQ_CONFIG=/ruta/a/otra.toml orq ...
+#
+# Las claves con caracteres especiales (@, *, ñ, espacios) van entre comillas.
+# Una clave ausente equivale a None (p.ej. un workspace sin `add_dir`).
+
+# Máquina que corre las sesiones si no hay --host ni ORQ_HOST (default: "local").
+maquina_default = "local"
+
+# Workspace si no hay --ws/ORQ_WS y el cwd no cae dentro de ninguno declarado.
+# Sin esta clave, orq usa el repo git del cwd; fuera de un repo da error.
+workspace_default = "mi-empresa"
+
+# ── Máquinas ─────────────────────────────────────────────────────────────────
+[maquinas.local]
+ssh = []                       # vacío = local: `bash -s` sin SSH
+claude = "claude"              # binario de claude (o ruta, p.ej. "~/.local/bin/claude")
+concurrencia = 2               # sesiones simultáneas máximas
+tiene_devctx = true            # ¿hay devctx acá? (los aprendizajes se guardan en vivo)
+
+[maquinas.servidor]            # ejemplo de máquina remota por SSH
+ssh = ["ssh", "-o", "BatchMode=yes", "servidor"]
+# Opcional: comando SSH para el attach INTERACTIVO que `orq status` sugiere (lista o string).
+# Útil si necesitás otro alias, p.ej. uno sin RemoteForward. Sin esta clave se usa `ssh`.
+ssh_attach = "ssh servidor-tty"
+claude = "~/.local/bin/claude" # a veces no está en el PATH no-interactivo
+concurrencia = 4
+tiene_devctx = false           # sin devctx: los aprendizajes vuelven por `orq harvest`
+
+# ── Workspaces: DÓNDE trabaja orq ────────────────────────────────────────────
+# `path` es relativo al HOME de la máquina que corre las sesiones, por eso se conserva el `~`.
+#   multi: directorio con varios repos hijos (cada subdirectorio con .git es un target).
+#   repo:  un repo suelto; el target es el propio repo.
+[workspaces.mi-empresa]
+path = "~/proyectos/mi-empresa"
+tipo = "multi"
+# Si el directorio NO es un repo git, el escaneo de agentes se detiene en la raíz de cada repo
+# hijo y no llega a <path>/.claude/agents/. `add_dir` lo agrega al contexto de la sesión.
+add_dir = "~/proyectos/mi-empresa"
+agents = "~/proyectos/mi-empresa/.claude/agents"   # opcional (default: <path>/.claude/agents)
+plans = "~/proyectos/mi-empresa/plans"             # opcional (default: <path>/plans)
+worktrees_en = "~/proyectos/mi-empresa/.orq-trees" # opcional (default: ~/.orq/trees/<ws>)
+# Tokens que no distinguen nada entre los repos de este workspace (no puntúan en el match).
+ruido = ["mi-empresa", "api", "service"]
+# true = las claves de estado de ~/.orq/*.json no llevan prefijo `<ws>:` (para workspaces
+# anteriores a la existencia de workspaces). Dejalo en false/ausente en uno nuevo.
+claves_sin_prefijo = false
+
+[workspaces.herramienta]
+path = "~/personal/herramienta"
+tipo = "repo"                  # repo suelto: sin add_dir, agentes en <repo>/.claude/agents
+
+# ── Specialists: arquetipo@target -> agente ──────────────────────────────────
+# `*` como target vale para cualquier repo. Sin entrada, orq marca "sin specialist" y la
+# skill propone crear uno.
+[specialists]
+"worker@api-clientes"   = "java-backend-specialist"
+"worker@web-portal"     = "frontend-specialist"
+"reviewer@*"            = "code-reviewer"
+
+# ── Recursos exclusivos ──────────────────────────────────────────────────────
+# El lock es por RECURSO, no por repo: dos worktrees aislados igual se pisan si tocan lo mismo.
+# Se SUMAN a los de roles.py. `solo_ws` limita el recurso a esos workspaces (ausente = todos);
+# `detectar` son palabras clave del intent que lo activan.
+[recursos_exclusivos.base_qa]
+solo_ws = ["mi-empresa"]
+motivo = "una sola base de QA compartida: dos corridas a la vez se pisan los datos"
+detectar = ["base qa", "migración", "seed"]
+
+# ── Ajustes sueltos de la política (opcionales) ──────────────────────────────
+# Cualquier clave de roles.py se puede pisar acá. Ejemplo: dónde corre el scout.
+# [arquetipos.scout]
+# maquina = "local"
